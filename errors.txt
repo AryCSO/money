@@ -1,0 +1,38 @@
+﻿Analyzing money...                                              
+
+   info - The imported package 'provider' isn't a dependency of the importing package - lib\app.dart:2:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:provider/provider.dart' - lib\app.dart:2:8 - uri_does_not_exist
+  error - The method 'Consumer' isn't defined for the type 'MoneyApp' - lib\app.dart:18:13 - undefined_method
+   info - Unnecessary use of multiple underscores - lib\app.dart:19:26 - unnecessary_underscores
+   info - The imported package 'dio' isn't a dependency of the importing package - lib\core\network\api_client.dart:3:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:dio/dio.dart' - lib\core\network\api_client.dart:3:8 - uri_does_not_exist
+   info - The imported package 'dio' isn't a dependency of the importing package - lib\core\network\api_client.dart:4:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:dio/io.dart' - lib\core\network\api_client.dart:4:8 - uri_does_not_exist
+  error - The method 'Dio' isn't defined for the type 'ApiClient' - lib\core\network\api_client.dart:10:11 - undefined_method
+  error - The method 'BaseOptions' isn't defined for the type 'ApiClient' - lib\core\network\api_client.dart:11:7 - undefined_method
+  error - The name 'IOHttpClientAdapter' isn't defined, so it can't be used in an 'is' expression - lib\core\network\api_client.dart:24:20 - type_test_with_undefined_name
+  error - Undefined class 'Dio' - lib\core\network\api_client.dart:33:14 - undefined_class
+   info - The imported package 'dio' isn't a dependency of the importing package - lib\data\datasources\evolution_api_service.dart:1:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:dio/dio.dart' - lib\data\datasources\evolution_api_service.dart:1:8 - uri_does_not_exist
+  error - The name 'DioException' isn't a type and can't be used in an on-catch clause - lib\data\datasources\evolution_api_service.dart:28:10 - non_type_in_catch_clause
+   info - The imported package 'provider' isn't a dependency of the importing package - lib\main.dart:2:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:provider/provider.dart' - lib\main.dart:2:8 - uri_does_not_exist
+  error - The function 'MultiProvider' isn't defined - lib\main.dart:23:5 - undefined_function
+  error - Undefined name 'Provider' - lib\main.dart:25:9 - undefined_identifier
+  error - The function 'ChangeNotifierProvider' isn't defined - lib\main.dart:26:9 - undefined_function
+  error - The function 'ChangeNotifierProvider' isn't defined - lib\main.dart:33:9 - undefined_function
+   info - The imported package 'provider' isn't a dependency of the importing package - lib\presentation\views\connection_page.dart:2:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:provider/provider.dart' - lib\presentation\views\connection_page.dart:2:8 - uri_does_not_exist
+   info - The imported package 'qr_flutter' isn't a dependency of the importing package - lib\presentation\views\connection_page.dart:3:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:qr_flutter/qr_flutter.dart' - lib\presentation\views\connection_page.dart:3:8 - uri_does_not_exist
+  error - The method 'watch' isn't defined for the type 'BuildContext' - lib\presentation\views\connection_page.dart:12:24 - undefined_method
+  error - The method 'QrImageView' isn't defined for the type 'ConnectionPage' - lib\presentation\views\connection_page.dart:53:36 - undefined_method
+   info - The imported package 'provider' isn't a dependency of the importing package - lib\presentation\views\dashboard_page.dart:2:8 - depend_on_referenced_packages
+  error - Target of URI doesn't exist: 'package:provider/provider.dart' - lib\presentation\views\dashboard_page.dart:2:8 - uri_does_not_exist
+  error - The method 'watch' isn't defined for the type 'BuildContext' - lib\presentation\views\dashboard_page.dart:14:24 - undefined_method
+warning - The member 'notifyListeners' can only be used within 'package:flutter/src/foundation/change_notifier.dart' or a test - lib\presentation\views\dashboard_page.dart:75:38 - invalid_use_of_visible_for_testing_member
+warning - The member 'notifyListeners' can only be used within instance members of subclasses of 'ChangeNotifier' - lib\presentation\views\dashboard_page.dart:75:38 - invalid_use_of_protected_member
+warning - The member 'notifyListeners' can only be used within 'package:flutter/src/foundation/change_notifier.dart' or a test - lib\presentation\views\dashboard_page.dart:214:30 - invalid_use_of_visible_for_testing_member
+warning - The member 'notifyListeners' can only be used within instance members of subclasses of 'ChangeNotifier' - lib\presentation\views\dashboard_page.dart:214:30 - invalid_use_of_protected_member
+  error - The name 'MyApp' isn't a class - test\widget_test.dart:16:35 - creation_with_non_type
+

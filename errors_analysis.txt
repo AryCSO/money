@@ -1,0 +1,20 @@
+﻿Analyzing money...                                              
+
+   info - Use the null-aware marker '?' rather than a null check via an 'if' - lib\presentation\widgets\section_card.dart:47:17 - use_null_aware_elements
+
+flutter : 1 issue found. (ran 
+in 9.9s)
+No linha:1 caractere:1
++ flutter analyze 
+--no-fatal-infos 2>&1 | 
+Out-File -FilePath errors_ana 
+...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~
+    + CategoryInfo          : 
+    NotSpecified: (1 issue f  
+  ound. (ran in 9.9s):Strin   
+ g) [], RemoteException
+    + FullyQualifiedErrorId : 
+    NativeCommandError
+ 

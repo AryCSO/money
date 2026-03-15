@@ -1,0 +1,5 @@
+﻿Analyzing money...                                              
+
+   info - 'background' is deprecated and shouldn't be used. Use surface instead. This feature was deprecated after v3.18.0-0.1.pre - lib\core\theme\app_theme.dart:16:9 - deprecated_member_use
+   info - 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss - lib\presentation\views\dashboard_page.dart:196:48 - deprecated_member_use
+
