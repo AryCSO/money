@@ -8,18 +8,26 @@ import 'package:flutter/material.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/phone_utils.dart';
 import '../../core/utils/template_engine.dart';
+import '../../data/datasources/database_service.dart';
 import '../../data/datasources/spreadsheet_service.dart';
 import '../../data/models/message_job.dart';
 import '../../data/models/send_result.dart';
 import '../../data/models/server_data.dart';
 import '../../data/models/template_variable_data.dart';
 import '../../domain/usecases/send_bulk_messages_usecase.dart';
+import 'auto_reply_viewmodel.dart';
 
 class TemplateViewModel extends ChangeNotifier {
   TemplateViewModel({required SendBulkMessagesUseCase sendBulkMessagesUseCase})
     : _sendBulkMessagesUseCase = sendBulkMessagesUseCase;
 
   final SendBulkMessagesUseCase _sendBulkMessagesUseCase;
+
+  /// Referência ao auto-reply para coordenar envio em massa
+  AutoReplyViewModel? autoReplyViewModel;
+
+  /// Referência ao banco de dados
+  final DatabaseService _db = DatabaseService.instance;
   final SpreadsheetService _spreadsheetService = SpreadsheetService();
 
   // ---- Template controllers ----
@@ -345,9 +353,14 @@ class TemplateViewModel extends ChangeNotifier {
         jobs: [job],
         minIntervalSeconds: minInterval,
         maxIntervalSeconds: maxInterval,
+        enforceDuplicateGuard: false,
+        isCancelled: () => !isSending,
       );
 
       final successCount = sendResults.where((result) => result.success).length;
+      if (successCount > 0) {
+        autoReplyViewModel?.markAsManuallyAnswered(targetPhone);
+      }
       feedbackMessage = successCount > 0
           ? 'Envio concluido para $successCount numero(s).'
           : 'Falha ao enviar as mensagens.';
@@ -400,7 +413,10 @@ class TemplateViewModel extends ChangeNotifier {
     sendTotal = serversToSend.length;
     notifyListeners();
 
-    final allResults = <SendResult>[];
+    // ── Notificar auto-reply que envio em massa começou ──
+    autoReplyViewModel?.setBulkSendingActive(true);
+
+    var cancelledByUser = false;
 
     for (int i = 0; i < serversToSend.length; i++) {
       final server = serversToSend[i];
@@ -409,16 +425,42 @@ class TemplateViewModel extends ChangeNotifier {
       final serverDdd = server.ddd.replaceAll(RegExp(r'\D'), '');
       final serverPhone = server.telefone.replaceAll(RegExp(r'\D'), '');
 
-      if (serverPhone.length < 8) {
-        allResults.add(
-          SendResult(
-            phone: '$serverDdd$serverPhone',
-            success: false,
-            message: 'Telefone invalido para ${server.nome}',
-          ),
+      // ── Registrar cliente no banco de dados ──
+      int? clienteId;
+      try {
+        clienteId = await _db.upsertCliente(
+          nome: server.nome,
+          cargo: server.cargo,
+          telefone: server.telefone,
+          ddd: server.ddd,
+          idade: server.idade,
+          municipio: server.municipio,
+          genero: server.genero,
+          parcelas: server.parcelas,
         );
+      } catch (_) {}
+
+      if (serverPhone.length < 8) {
+        final result = SendResult(
+          phone: '$serverDdd$serverPhone',
+          success: false,
+          message: 'Telefone invalido para ${server.nome}',
+        );
+        sendResults = [...sendResults, result];
+
+        // ── Registrar no banco ──
+        try {
+          await _db.registrarEnvio(
+            clienteId: clienteId,
+            telefoneCompleto: '$serverDdd$serverPhone',
+            nomeCliente: server.nome,
+            sucesso: false,
+            mensagemStatus: 'Telefone invalido',
+          );
+        } catch (_) {}
+
         sendProgress = i + 1;
-        notifyListeners();
+        notifyListeners(); // ✅ RESULTADO EM TEMPO REAL
         continue;
       }
 
@@ -438,11 +480,13 @@ class TemplateViewModel extends ChangeNotifier {
         parc5: parcFormatadas.length > 4 ? parcFormatadas[4] : '',
       );
 
+      final renderedMsgs = templates
+          .map((t) => TemplateEngine.render(template: t, data: payloadData))
+          .toList();
+
       final job = MessageJob(
         data: payloadData,
-        renderedMessages: templates
-            .map((t) => TemplateEngine.render(template: t, data: payloadData))
-            .toList(),
+        renderedMessages: renderedMsgs,
       );
 
       try {
@@ -451,51 +495,122 @@ class TemplateViewModel extends ChangeNotifier {
           jobs: [job],
           minIntervalSeconds: 0, // Delay is handled below now
           maxIntervalSeconds: 0,
+          enforceDuplicateGuard: true,
+          isCancelled: () => !isSending,
         );
-        allResults.addAll(results);
+
+        // ✅ RESULTADO EM TEMPO REAL — adiciona imediatamente
+        sendResults = [...sendResults, ...results];
 
         // Desmarcar o cliente automaticamente se pelo menos uma mensagem foi enviada com sucesso
         if (results.any((r) => r.success)) {
           server.isSelected = false;
         }
+
+        // ── Registrar no banco de dados ──
+        for (final r in results) {
+          try {
+            await _db.registrarEnvio(
+              clienteId: clienteId,
+              telefoneCompleto: fullNumber,
+              nomeCliente: server.nome,
+              sucesso: r.success,
+              mensagemStatus: r.message,
+              mensagemEnviada: r.success ? renderedMsgs.join('\n---\n') : '',
+            );
+          } catch (_) {}
+        }
       } catch (e) {
-        allResults.add(
-          SendResult(phone: fullNumber, success: false, message: 'Erro: $e'),
+        final errorResult = SendResult(
+          phone: fullNumber,
+          success: false,
+          message: 'Erro: $e',
         );
+        sendResults = [...sendResults, errorResult];
+
+        try {
+          await _db.registrarEnvio(
+            clienteId: clienteId,
+            telefoneCompleto: fullNumber,
+            nomeCliente: server.nome,
+            sucesso: false,
+            mensagemStatus: 'Erro: $e',
+          );
+        } catch (_) {}
       }
 
       sendProgress = i + 1;
-      notifyListeners();
+      notifyListeners(); // ✅ RESULTADO EM TEMPO REAL
 
-      // Check if user cancelled or we are moving to the next client
-      if (!isSending) break;
+      // Verificar cancelamento imediatamente após cada cliente
+      if (!isSending) {
+        cancelledByUser = true;
+        break;
+      }
       final isLast = i == serversToSend.length - 1;
 
       if (!isLast) {
-        // Apply the delay here so the UI still updates progress smoothly
+        // Delay cancelável entre clientes — verifica cancelamento a cada ~200ms
         final safeMin = minInterval < 1 ? 1 : minInterval;
         final safeMax = maxInterval < safeMin ? safeMin : maxInterval;
         final nextSeconds = safeMin + Random().nextInt((safeMax - safeMin) + 1);
-        final nextMs = Random().nextInt(1000); // jitter
+        final nextMs = Random().nextInt(1000);
 
-        await Future<void>.delayed(
+        final cancelled = await _cancellableDelay(
           Duration(seconds: nextSeconds, milliseconds: nextMs),
         );
+        if (cancelled) {
+          cancelledByUser = true;
+          break;
+        }
       }
     }
 
-    sendResults = allResults;
-    final successCount = allResults.where((r) => r.success).length;
-    feedbackMessage =
-        'Campanha finalizada: $successCount/${allResults.length} enviados com sucesso.';
+    final successCount = sendResults.where((r) => r.success).length;
+    final skippedCount = sendResults
+        .where(
+          (r) =>
+              !r.success &&
+              r.message.toLowerCase().contains('pulado:'),
+        )
+        .length;
+    feedbackMessage = cancelledByUser
+        ? 'Envio cancelado: $successCount/${sendResults.length} enviados antes da interrupcao.'
+        : 'Campanha finalizada: $successCount/${sendResults.length} enviados com sucesso.'
+              '${skippedCount > 0 ? ' $skippedCount numero(s) pulados por regra anti-repeticao.' : ''}';
     isSending = false;
+
+    // ── Notificar auto-reply que envio em massa terminou ──
+    autoReplyViewModel?.setBulkSendingActive(false);
+
     notifyListeners();
   }
 
   void cancelSending() {
+    if (!isSending) {
+      return;
+    }
+
     isSending = false;
     feedbackMessage = 'Envio cancelado pelo usuário.';
     notifyListeners();
+  }
+
+  /// Delay que verifica cancelamento a cada ~200ms.
+  /// Retorna `true` se foi cancelado antes do tempo total acabar.
+  Future<bool> _cancellableDelay(Duration total) async {
+    const tick = Duration(milliseconds: 200);
+    var remaining = total;
+
+    while (remaining > Duration.zero) {
+      if (!isSending) return true;
+
+      final wait = remaining < tick ? remaining : tick;
+      await Future<void>.delayed(wait);
+      remaining -= wait;
+    }
+
+    return !isSending;
   }
 
   String? _validateBeforeSend(List<String> templates) {
@@ -564,18 +679,18 @@ class PredefinedTemplate {
 const predefinedTemplatesList = [
   PredefinedTemplate('Quitacao M', [
     '{Olá|Oi|Bom dia}, {NOME}, me chamo Aryel, tudo {certo|bem} com o {Sr|senhor}?',
-    '{POSI} Consegui uma condição especial de quitação {das suas parcelas|dos seus empréstimos} do *{BANCO}* no valor de:\n{PARC1}\n{PARC2}\n{PARC3}\n{PARC4}\n{PARC5}',
+    '{Sr|Senhor}, consegui uma condição especial de quitação {das suas parcelas|dos seus empréstimos} do *{BANCO}* no valor de:\n{PARC1}\n{PARC2}\n{PARC3}\n{PARC4}\n{PARC5}',
     '{Funciona assim|Como funciona}: {eu utilizo|nós utilizamos} recurso próprio para {quitar|abater} {seu saldo devedor|o restante das parcelas}, e {você|o senhor|o Sr} pode liberar uma margem que pode gerar um valor interessante no bolso.',
     'Posso fazer a simulacao agora para { você |o senhor|o Sr}, sem compromisso.',
-    'É só me enviar o {contracheque atualizado|seu último contracheque} que ja {retorno|volto} com os valores.',
+    '{É só me enviar|Se tiver interesse é só me enviar} o {contracheque atualizado|seu último contracheque} que ja {retorno|volto} com os valores.',
     '',
   ]),
   PredefinedTemplate('Quitacao F', [
     '{Olá|Oi|Bom dia}, {NOME}, me chamo Aryel, tudo {certo|bem} com a {Sra|senhora}?',
-    '{POSI} {Gostaria de oferecer|Consegui} uma condição especial de quitação {das suas parcelas|dos seus empréstimos} do *{BANCO}* no valor de:\n{PARC1}\n{PARC2}\n{PARC3}\n{PARC4}\n{PARC5}',
+    '{Sra|Senhora}, consegui uma condição especial de quitação {das suas parcelas|dos seus empréstimos} do *{BANCO}* no valor de:\n{PARC1}\n{PARC2}\n{PARC3}\n{PARC4}\n{PARC5}',
     '{Funciona assim|Como funciona}: {eu utilizo|nós utilizamos} recurso próprio para {quitar|abater} {seu saldo devedor|o restante das parcelas}, e {você|a senhora|a Sra} pode liberar uma margem que pode gerar um valor interessante no bolso.',
     'Posso fazer a simulacao agora para {você|a senhora|a Sra}, sem compromisso.',
-    'É só me enviar o {contracheque atualizado|seu último contracheque} que ja {retorno|volto} com os valores.',
+    '{É só me enviar|Se tiver interesse é só me enviar} o {contracheque atualizado|seu último contracheque} que ja {retorno|volto} com os valores.',
     '',
   ]),
 ];

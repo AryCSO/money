@@ -5,10 +5,10 @@ import '../constants/app_constants.dart';
 import 'dio_config.dart';
 
 class ApiClient {
-  ApiClient() {
+  ApiClient({required String initialBaseUrl}) {
     dio = Dio(
       BaseOptions(
-        baseUrl: AppConstants.baseUrl,
+        baseUrl: initialBaseUrl,
         headers: {
           'Content-Type': 'application/json',
           'apikey': AppConstants.apiKey,
@@ -23,4 +23,8 @@ class ApiClient {
   }
 
   late final Dio dio;
+
+  void updateBaseUrl(String baseUrl) {
+    dio.options.baseUrl = baseUrl;
+  }
 }

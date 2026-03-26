@@ -97,6 +97,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.3.3"
+  fbdb:
+    dependency: "direct main"
+    description:
+      name: fbdb
+      sha256: df4f7712d0f4e8688bd00373c3b26c864584104aa437097865e5a6cb5be23a10
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.6.0"
   ffi:
     dependency: transitive
     description:

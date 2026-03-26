@@ -1,4 +1,4 @@
-/// Representa um servidor (funcionário) extraído da planilha.
+/// Representa um servidor extraido da planilha.
 class ServerData {
   final String nome;
   final String cargo;
@@ -6,9 +6,9 @@ class ServerData {
   final String ddd;
   final int idade;
   final String municipio;
-  final List<double> parcelas; // top 5, já ordenadas desc
-  final bool hasColor; // se a linha tem cor (ignorar)
-  final String genero; // Masculino, Feminino, Indefinido
+  final List<double> parcelas;
+  final bool hasColor; // reservado para futura deteccao visual
+  final String genero;
   bool isSelected;
 
   ServerData({
@@ -24,25 +24,24 @@ class ServerData {
     this.isSelected = true,
   });
 
-  /// Retorna as parcelas formatadas como texto (ex: "R$ 1.234,56")
   List<String> get parcelasFormatadas {
-    return parcelas.map((v) {
-      final formatted = v.toStringAsFixed(2).replaceAll('.', ',');
-      // Adicionar separador de milhar
+    return parcelas.map((value) {
+      final formatted = value.toStringAsFixed(2).replaceAll('.', ',');
       final parts = formatted.split(',');
       final intPart = parts[0];
       final decPart = parts[1];
       final buffer = StringBuffer();
-      for (int i = 0; i < intPart.length; i++) {
+
+      for (var i = 0; i < intPart.length; i++) {
         if (i > 0 && (intPart.length - i) % 3 == 0) {
           buffer.write('.');
         }
         buffer.write(intPart[i]);
       }
+
       return 'R\$ $buffer,$decPart';
     }).toList();
   }
 
-  /// Verdadeiro se o servidor tiver pelo menos um empréstimo válido
   bool get hasLoans => parcelas.isNotEmpty;
 }

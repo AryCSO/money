@@ -11,11 +11,15 @@ class SendBulkMessagesUseCase {
     required List<MessageJob> jobs,
     required int minIntervalSeconds,
     required int maxIntervalSeconds,
+    bool enforceDuplicateGuard = true,
+    bool Function()? isCancelled,
   }) {
     return _repository.sendBulkMessages(
       jobs: jobs,
       minIntervalSeconds: minIntervalSeconds,
       maxIntervalSeconds: maxIntervalSeconds,
+      enforceDuplicateGuard: enforceDuplicateGuard,
+      isCancelled: isCancelled,
     );
   }
 }

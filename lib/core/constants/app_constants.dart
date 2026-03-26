@@ -1,5 +1,5 @@
 class AppConstants {
-  static const String baseUrl = 'http://localhost:50010';
+  static const String baseUrl = 'http://localhost:51062';
   static const String apiKey = 'f0Y69k2b5yQWWtmLUs40UVtFWWBIhuWA';
   static const String instanceName = 'money';
   static const String integration = 'WHATSAPP-BAILEYS';

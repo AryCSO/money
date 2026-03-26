@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../../core/constants/app_constants.dart';
 import '../../data/models/qr_code_response.dart';
 import '../../domain/usecases/check_connection_usecase.dart';
+import '../../domain/usecases/disconnect_instance_usecase.dart';
 import '../../domain/usecases/ensure_money_instance_usecase.dart';
 import '../../domain/usecases/get_qr_code_usecase.dart';
 
@@ -14,17 +15,21 @@ class ConnectionViewModel extends ChangeNotifier {
     required EnsureMoneyInstanceUseCase ensureMoneyInstanceUseCase,
     required GetQrCodeUseCase getQrCodeUseCase,
     required CheckConnectionUseCase checkConnectionUseCase,
+    required DisconnectInstanceUseCase disconnectInstanceUseCase,
   }) : _ensureMoneyInstanceUseCase = ensureMoneyInstanceUseCase,
        _getQrCodeUseCase = getQrCodeUseCase,
-       _checkConnectionUseCase = checkConnectionUseCase;
+       _checkConnectionUseCase = checkConnectionUseCase,
+       _disconnectInstanceUseCase = disconnectInstanceUseCase;
 
   final EnsureMoneyInstanceUseCase _ensureMoneyInstanceUseCase;
   final GetQrCodeUseCase _getQrCodeUseCase;
   final CheckConnectionUseCase _checkConnectionUseCase;
+  final DisconnectInstanceUseCase _disconnectInstanceUseCase;
 
   bool isLoading = true;
   bool isConnected = false;
   bool isRefreshingQr = false;
+  bool isDisconnecting = false;
   bool _isCheckingConnection = false;
   String? errorMessage;
   QrCodeResponse? qrCode;
@@ -32,6 +37,7 @@ class ConnectionViewModel extends ChangeNotifier {
   Timer? _poller;
 
   Future<void> initialize() async {
+    _poller?.cancel();
     isLoading = true;
     errorMessage = null;
     notifyListeners();
@@ -89,7 +95,7 @@ class ConnectionViewModel extends ChangeNotifier {
   }
 
   Future<void> checkConnection() async {
-    if (_isCheckingConnection || isConnected) {
+    if (_isCheckingConnection) {
       return;
     }
 
@@ -97,15 +103,44 @@ class ConnectionViewModel extends ChangeNotifier {
     try {
       final result = await _checkConnectionUseCase();
       isConnected = result.isOpen;
-      if (isConnected) {
-        _poller?.cancel();
-      }
     } catch (_) {
       isConnected = false;
     } finally {
       _isCheckingConnection = false;
       notifyListeners();
     }
+  }
+
+  Future<void> disconnectAndGoToQr() async {
+    if (isDisconnecting) {
+      return;
+    }
+
+    isDisconnecting = true;
+    errorMessage = null;
+    _poller?.cancel();
+    notifyListeners();
+
+    try {
+      await _disconnectInstanceUseCase();
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Falha ao desconectar instancia: $e');
+      }
+      errorMessage = 'Falha ao desconectar a instancia: $e';
+    }
+
+    isConnected = false;
+    isLoading = false;
+    qrCode = null;
+    lastQrRefreshAt = null;
+    notifyListeners();
+
+    await refreshQrCode(showLoader: false);
+    _startPolling();
+
+    isDisconnecting = false;
+    notifyListeners();
   }
 
   void _startPolling() {

@@ -7,6 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../viewmodels/connection_viewmodel.dart';
+import 'developer_options_page.dart';
 
 class ConnectionPage extends StatelessWidget {
   const ConnectionPage({super.key});
@@ -25,102 +26,128 @@ class ConnectionPage extends StatelessWidget {
           ),
         ),
         child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _StatusBadge(isConnected: vm.isConnected),
-                        const SizedBox(height: 18),
-                        const Icon(
-                          Icons.qr_code_scanner_rounded,
-                          size: 52,
-                          color: AppTheme.gold,
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Conectar instancia money',
-                          style: Theme.of(context).textTheme.headlineSmall
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        const Text(
-                          'Escaneie o QR Code no WhatsApp. Assim que a conexao abrir, a tela de disparo sera liberada automaticamente.',
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 24),
-                        _QrState(vm: vm),
-                        const SizedBox(height: 16),
-                        if (vm.errorMessage != null)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: const Color(
-                                0xFFFF7B7B,
-                              ).withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: const Color(
-                                  0xFFFF7B7B,
-                                ).withValues(alpha: 0.35),
+          child: Stack(
+            children: [
+              Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 520),
+                    child: Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _StatusBadge(isConnected: vm.isConnected),
+                            const SizedBox(height: 18),
+                            const Icon(
+                              Icons.qr_code_scanner_rounded,
+                              size: 52,
+                              color: AppTheme.gold,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'Conectar instancia money',
+                              style: Theme.of(context).textTheme.headlineSmall
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Escaneie o QR Code no WhatsApp. Assim que a conexao abrir, a tela de disparo sera liberada automaticamente.',
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 24),
+                            _QrState(vm: vm),
+                            const SizedBox(height: 16),
+                            if (vm.errorMessage != null)
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFFFF7B7B,
+                                  ).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: const Color(
+                                      0xFFFF7B7B,
+                                    ).withValues(alpha: 0.35),
+                                  ),
+                                ),
+                                child: Text(
+                                  vm.errorMessage!,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: Color(0xFFFFA9A9)),
+                                ),
+                              ),
+                            const SizedBox(height: 14),
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: vm.isRefreshingQr
+                                    ? null
+                                    : () async {
+                                        await vm.refreshQrCode();
+                                        await vm.checkConnection();
+                                      },
+                                icon: vm.isRefreshingQr
+                                    ? const SizedBox(
+                                        height: 18,
+                                        width: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.refresh_rounded),
+                                label: Text(
+                                  vm.isRefreshingQr
+                                      ? 'Atualizando QR Code...'
+                                      : 'Atualizar QR Code',
+                                ),
                               ),
                             ),
-                            child: Text(
-                              vm.errorMessage!,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Color(0xFFFFA9A9)),
-                            ),
-                          ),
-                        const SizedBox(height: 14),
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            onPressed: vm.isRefreshingQr
-                                ? null
-                                : () async {
-                                    await vm.refreshQrCode();
-                                    await vm.checkConnection();
-                                  },
-                            icon: vm.isRefreshingQr
-                                ? const SizedBox(
-                                    height: 18,
-                                    width: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
-                                  )
-                                : const Icon(Icons.refresh_rounded),
-                            label: Text(
-                              vm.isRefreshingQr
-                                  ? 'Atualizando QR Code...'
-                                  : 'Atualizar QR Code',
-                            ),
-                          ),
+                            if (vm.lastQrRefreshAt != null) ...[
+                              const SizedBox(height: 12),
+                              Text(
+                                'Ultima atualizacao: ${_formatTime(vm.lastQrRefreshAt!)}',
+                                style: const TextStyle(
+                                  color: Color(0xFFB8C0CF),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
-                        if (vm.lastQrRefreshAt != null) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            'Ultima atualizacao: ${_formatTime(vm.lastQrRefreshAt!)}',
-                            style: const TextStyle(
-                              color: Color(0xFFB8C0CF),
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
+              Positioned(
+                top: 6,
+                right: 6,
+                child: IconButton(
+                  tooltip: 'Opcoes do desenvolvedor',
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const DeveloperOptionsPage(),
+                      ),
+                    );
+                  },
+                  style: IconButton.styleFrom(
+                    backgroundColor: Colors.black.withValues(alpha: 0.22),
+                    foregroundColor: Colors.white.withValues(alpha: 0.85),
+                    side: BorderSide(
+                      color: Colors.white.withValues(alpha: 0.18),
+                    ),
+                  ),
+                  icon: const Icon(Icons.settings_rounded, size: 20),
+                ),
+              ),
+            ],
           ),
         ),
       ),

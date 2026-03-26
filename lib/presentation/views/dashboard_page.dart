@@ -2,20 +2,96 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../viewmodels/auto_reply_viewmodel.dart';
+import '../viewmodels/connection_viewmodel.dart';
 import '../viewmodels/template_viewmodel.dart';
+import 'chat_page.dart';
 import '../widgets/result_list.dart';
 import '../widgets/section_card.dart';
 import '../widgets/token_chip_list.dart';
 
-class DashboardPage extends StatelessWidget {
+class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  final ValueNotifier<bool> _allExpandedNotifier = ValueNotifier<bool>(true);
+
+  @override
+  void dispose() {
+    _allExpandedNotifier.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<TemplateViewModel>();
+    final connectionVm = context.watch<ConnectionViewModel>();
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Painel de disparo')),
+      appBar: AppBar(
+        title: const Text('Painel de disparo'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Center(
+              child: FilledButton.tonalIcon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ChatPage(),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.chat_rounded, size: 18),
+                label: const Text('Chat'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF20332D),
+                  foregroundColor: const Color(0xFF95F2C3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: _allExpandedNotifier,
+            builder: (context, expanded, _) {
+              return IconButton(
+                tooltip: expanded ? 'Recolher todos' : 'Expandir todos',
+                icon: Icon(expanded
+                    ? Icons.unfold_less_rounded
+                    : Icons.unfold_more_rounded),
+                onPressed: () {
+                  _allExpandedNotifier.value = !expanded;
+                },
+              );
+            },
+          ),
+        ],
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
+      floatingActionButton: FloatingActionButton.small(
+        heroTag: 'disconnect-instance-btn',
+        tooltip: 'Sair e desconectar WhatsApp',
+        onPressed: connectionVm.isDisconnecting
+            ? null
+            : () => connectionVm.disconnectAndGoToQr(),
+        backgroundColor: const Color(0xFF2A1B22),
+        foregroundColor: const Color(0xFFFF9AA9),
+        child: connectionVm.isDisconnecting
+            ? const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.logout_rounded),
+      ),
       body: DecoratedBox(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -34,8 +110,8 @@ class DashboardPage extends StatelessWidget {
                   builder: (context, constraints) {
                     final isDesktop = constraints.maxWidth >= 1000;
 
-                    final left = _LeftColumn(vm: vm);
-                    final right = _RightColumn(vm: vm);
+                    final left = _LeftColumn(vm: vm, isDesktop: isDesktop, allExpandedNotifier: _allExpandedNotifier);
+                    final right = _RightColumn(vm: vm, isDesktop: isDesktop, allExpandedNotifier: _allExpandedNotifier);
 
                     if (isDesktop) {
                       return Row(
@@ -63,262 +139,207 @@ class DashboardPage extends StatelessWidget {
 }
 
 class _LeftColumn extends StatelessWidget {
-  const _LeftColumn({required this.vm});
+  const _LeftColumn({
+    required this.vm,
+    required this.isDesktop,
+    required this.allExpandedNotifier,
+  });
 
   final TemplateViewModel vm;
+  final bool isDesktop;
+  final ValueNotifier<bool> allExpandedNotifier;
 
   @override
   Widget build(BuildContext context) {
+    if (isDesktop) {
+      return Column(
+        children: [
+          _SpreadsheetSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
+          const SizedBox(height: 16),
+          _MessageModelsSection(vm: vm, includePredefinedTemplates: true, allExpandedNotifier: allExpandedNotifier),
+          const SizedBox(height: 16),
+          _ResultsSection(
+            vm: vm,
+            allExpandedNotifier: allExpandedNotifier,
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
-        // ============ UPLOAD DE PLANILHA ============
-        _SpreadsheetSection(vm: vm),
+        _SpreadsheetSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
         const SizedBox(height: 16),
-
-        // ============ MODELOS DE MENSAGEM ============
-        SectionCard(
-          title: 'Modelos de mensagem',
-          subtitle: 'Use variaveis como {NOME}, {POSI}, {BANCO}, {PARC1}...',
-          icon: Icons.message_rounded,
-          trailing: OutlinedButton.icon(
-            onPressed: vm.saveTemplate,
-            icon: const Icon(Icons.save_rounded),
-            label: const Text('Salvar'),
-          ),
-          child: Column(
-            children: [
-              ...List.generate(
-                6,
-                (index) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: TextField(
-                    controller: vm.templateControllers[index],
-                    minLines: 2,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      labelText: 'Mensagem ${index + 1}',
-                      hintText: index == 0
-                          ? 'Ex: Ola {NOME}, tudo bem?'
-                          : 'Mensagem complementar...',
-                    ),
-                    onChanged: (_) => vm.updatePreview(),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              TokenChipList(tokens: vm.tokensUsed),
-            ],
-          ),
-        ),
+        _MessageModelsSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
         const SizedBox(height: 16),
-        SectionCard(
-          title: 'Templates prontos',
-          subtitle: 'Carregue um modelo base para acelerar a operacao.',
-          icon: Icons.auto_awesome_rounded,
-          child: Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: predefinedTemplatesList
-                .map(
-                  (template) => FilledButton.tonalIcon(
-                    onPressed: () => vm.loadPredefinedTemplate(template),
-                    icon: const Icon(Icons.file_copy_rounded, size: 18),
-                    label: Text(template.name),
-                  ),
-                )
-                .toList(),
-          ),
-        ),
+        _ReadyTemplatesSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
         const SizedBox(height: 16),
-        SectionCard(
-          title: 'Dados dinamicos',
-          subtitle: 'Valores usados para substituir variaveis no preview.',
-          icon: Icons.dataset_linked_rounded,
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final columns = constraints.maxWidth >= 760 ? 3 : 1;
-              final fieldWidth = columns == 3
-                  ? (constraints.maxWidth - 24) / 3
-                  : constraints.maxWidth;
-
-              return Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  _field('NOME', vm.nomeController, vm, fieldWidth),
-                  _field('POSI', vm.posiController, vm, fieldWidth),
-                  _field('BANCO', vm.bancoController, vm, fieldWidth),
-                  _field('PARC1', vm.parc1Controller, vm, fieldWidth),
-                  _field('PARC2', vm.parc2Controller, vm, fieldWidth),
-                  _field('PARC3', vm.parc3Controller, vm, fieldWidth),
-                  _field('PARC4', vm.parc4Controller, vm, fieldWidth),
-                  _field('PARC5', vm.parc5Controller, vm, fieldWidth),
-                ],
-              );
-            },
-          ),
-        ),
+        _DynamicDataSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
         const SizedBox(height: 16),
-        SectionCard(
-          title: 'Destino e intervalo',
-          subtitle: vm.hasSpreadsheet
-              ? 'DDI e intervalos serao usados no envio em massa.'
-              : 'Defina o numero e o tempo entre envios.',
-          icon: Icons.send_to_mobile_rounded,
-          child: Column(
-            children: [
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  if (constraints.maxWidth >= 620) {
-                    return Row(
-                      children: [
-                        SizedBox(
-                          width: 90,
-                          child: _phoneField(
-                            controller: vm.ddiController,
-                            label: 'DDI',
-                            hint: '55',
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        if (!vm.hasSpreadsheet) ...[
-                          SizedBox(
-                            width: 90,
-                            child: _phoneField(
-                              controller: vm.dddController,
-                              label: 'DDD',
-                              hint: '62',
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _phoneField(
-                              controller: vm.phoneController,
-                              label: 'Numero',
-                              hint: '900000000',
-                            ),
-                          ),
-                        ],
-                      ],
-                    );
-                  }
-
-                  return Column(
-                    children: [
-                      _phoneField(
-                        controller: vm.ddiController,
-                        label: 'DDI',
-                        hint: '55',
-                      ),
-                      if (!vm.hasSpreadsheet) ...[
-                        const SizedBox(height: 12),
-                        _phoneField(
-                          controller: vm.dddController,
-                          label: 'DDD',
-                          hint: '62',
-                        ),
-                        const SizedBox(height: 12),
-                        _phoneField(
-                          controller: vm.phoneController,
-                          label: 'Numero',
-                          hint: '900000000',
-                        ),
-                      ],
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: _intervalField(
-                      controller: vm.minIntervalController,
-                      label: 'Intervalo minimo (s)',
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _intervalField(
-                      controller: vm.maxIntervalController,
-                      label: 'Intervalo maximo (s)',
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // Botão de envio – troca entre manual e em massa
-              if (vm.hasSpreadsheet) ...[
-                // Barra de progresso
-                if (vm.isSending && vm.sendTotal > 0) ...[
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    child: Column(
-                      children: [
-                        LinearProgressIndicator(
-                          value: vm.sendProgress / vm.sendTotal,
-                          minHeight: 6,
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Enviando ${vm.sendProgress} de ${vm.sendTotal}...',
-                          style: const TextStyle(
-                            color: Color(0xFFC3CAD7),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    style: vm.isSending
-                        ? FilledButton.styleFrom(backgroundColor: const Color(0xFFFF7B7B))
-                        : null,
-                    onPressed:
-                        vm.isSending
-                            ? () => vm.cancelSending()
-                            : () => vm.sendBulkFromSpreadsheet(),
-                    icon: vm.isSending
-                        ? const Icon(Icons.stop_rounded)
-                        : const Icon(Icons.campaign_rounded),
-                    label: Text(
-                      vm.isSending
-                          ? 'Parar envio em massa'
-                          : 'Enviar para ${vm.filteredServers.length} servidor(es)',
-                    ),
-                  ),
-                ),
-              ] else ...[
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: vm.isSending ? null : () => vm.sendMessages(),
-                    icon: vm.isSending
-                        ? const SizedBox(
-                            height: 18,
-                            width: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.send_rounded),
-                    label: Text(
-                      vm.isSending ? 'Enviando...' : 'Enviar mensagens',
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
+        _DestinationIntervalSection(vm: vm, allExpandedNotifier: allExpandedNotifier),
       ],
     );
   }
+}
 
-  Widget _field(
+class _MessageModelsSection extends StatelessWidget {
+  const _MessageModelsSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+    this.includePredefinedTemplates = false,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+  final bool includePredefinedTemplates;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Modelo de mensagens',
+      subtitle: 'Use variaveis como {NOME}, {POSI}, {BANCO}, {PARC1}...',
+      icon: Icons.message_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      trailing: OutlinedButton.icon(
+        onPressed: vm.saveTemplate,
+        icon: const Icon(Icons.save_rounded),
+        label: const Text('Salvar'),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...List.generate(
+            6,
+            (index) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: TextField(
+                controller: vm.templateControllers[index],
+                minLines: 2,
+                maxLines: 4,
+                decoration: InputDecoration(
+                  labelText: 'Mensagem ${index + 1}',
+                  hintText: index == 0
+                      ? 'Ex: Ola {NOME}, tudo bem?'
+                      : 'Mensagem complementar...',
+                ),
+                onChanged: (_) => vm.updatePreview(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          TokenChipList(tokens: vm.tokensUsed),
+          if (includePredefinedTemplates) ...[
+            const SizedBox(height: 14),
+            Divider(color: const Color(0xFFD4AF37).withValues(alpha: 0.25)),
+            const SizedBox(height: 10),
+            const Text(
+              'Templates prontos',
+              style: TextStyle(
+                color: Color(0xFFC3CAD7),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: predefinedTemplatesList
+                  .map(
+                    (template) => FilledButton.tonalIcon(
+                      onPressed: () => vm.loadPredefinedTemplate(template),
+                      icon: const Icon(Icons.file_copy_rounded, size: 18),
+                      label: Text(template.name),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ReadyTemplatesSection extends StatelessWidget {
+  const _ReadyTemplatesSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Templates prontos',
+      subtitle: 'Carregue um modelo base para acelerar a operacao.',
+      icon: Icons.auto_awesome_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: predefinedTemplatesList
+            .map(
+              (template) => FilledButton.tonalIcon(
+                onPressed: () => vm.loadPredefinedTemplate(template),
+                icon: const Icon(Icons.file_copy_rounded, size: 18),
+                label: Text(template.name),
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+}
+
+class _DynamicDataSection extends StatelessWidget {
+  const _DynamicDataSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Dados dinamicos',
+      subtitle: 'Valores usados para substituir variaveis no preview.',
+      icon: Icons.dataset_linked_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final columns = constraints.maxWidth >= 760 ? 3 : 1;
+          final fieldWidth = columns == 3
+              ? (constraints.maxWidth - 24) / 3
+              : constraints.maxWidth;
+
+          return Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _dynamicField('NOME', vm.nomeController, vm, fieldWidth),
+              _dynamicField('POSI', vm.posiController, vm, fieldWidth),
+              _dynamicField('BANCO', vm.bancoController, vm, fieldWidth),
+              _dynamicField('PARC1', vm.parc1Controller, vm, fieldWidth),
+              _dynamicField('PARC2', vm.parc2Controller, vm, fieldWidth),
+              _dynamicField('PARC3', vm.parc3Controller, vm, fieldWidth),
+              _dynamicField('PARC4', vm.parc4Controller, vm, fieldWidth),
+              _dynamicField('PARC5', vm.parc5Controller, vm, fieldWidth),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _dynamicField(
     String label,
     TextEditingController controller,
     TemplateViewModel vm,
@@ -330,6 +351,173 @@ class _LeftColumn extends StatelessWidget {
         controller: controller,
         decoration: InputDecoration(labelText: label),
         onChanged: (_) => vm.updatePreview(),
+      ),
+    );
+  }
+}
+
+class _DestinationIntervalSection extends StatelessWidget {
+  const _DestinationIntervalSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Destino e intervalo',
+      subtitle: vm.hasSpreadsheet
+          ? 'DDI e intervalos serao usados no envio em massa.'
+          : 'Defina o numero e o tempo entre envios.',
+      icon: Icons.send_to_mobile_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      child: Column(
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              if (constraints.maxWidth >= 620) {
+                return Row(
+                  children: [
+                    SizedBox(
+                      width: 90,
+                      child: _phoneField(
+                        controller: vm.ddiController,
+                        label: 'DDI',
+                        hint: '55',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    if (!vm.hasSpreadsheet) ...[
+                      SizedBox(
+                        width: 90,
+                        child: _phoneField(
+                          controller: vm.dddController,
+                          label: 'DDD',
+                          hint: '62',
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: _phoneField(
+                          controller: vm.phoneController,
+                          label: 'Numero',
+                          hint: '900000000',
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              }
+
+              return Column(
+                children: [
+                  _phoneField(
+                    controller: vm.ddiController,
+                    label: 'DDI',
+                    hint: '55',
+                  ),
+                  if (!vm.hasSpreadsheet) ...[
+                    const SizedBox(height: 12),
+                    _phoneField(
+                      controller: vm.dddController,
+                      label: 'DDD',
+                      hint: '62',
+                    ),
+                    const SizedBox(height: 12),
+                    _phoneField(
+                      controller: vm.phoneController,
+                      label: 'Numero',
+                      hint: '900000000',
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _intervalField(
+                  controller: vm.minIntervalController,
+                  label: 'Intervalo minimo (s)',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _intervalField(
+                  controller: vm.maxIntervalController,
+                  label: 'Intervalo maximo (s)',
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (vm.hasSpreadsheet) ...[
+            if (vm.isSending && vm.sendTotal > 0) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Column(
+                  children: [
+                    LinearProgressIndicator(
+                      value: vm.sendProgress / vm.sendTotal,
+                      minHeight: 6,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Enviando ${vm.sendProgress} de ${vm.sendTotal}...',
+                      style: const TextStyle(
+                        color: Color(0xFFC3CAD7),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: vm.isSending
+                    ? FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFFF7B7B),
+                      )
+                    : null,
+                onPressed: vm.isSending
+                    ? () => vm.cancelSending()
+                    : () => vm.sendBulkFromSpreadsheet(),
+                icon: vm.isSending
+                    ? const Icon(Icons.stop_rounded)
+                    : const Icon(Icons.campaign_rounded),
+                label: Text(
+                  vm.isSending
+                      ? 'Parar envio em massa'
+                      : 'Enviar para ${vm.filteredServers.length} servidor(es)',
+                ),
+              ),
+            ),
+          ] else ...[
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: vm.isSending ? null : () => vm.sendMessages(),
+                icon: vm.isSending
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.send_rounded),
+                label: Text(vm.isSending ? 'Enviando...' : 'Enviar mensagens'),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -360,14 +548,79 @@ class _LeftColumn extends StatelessWidget {
   }
 }
 
+class _PreviewSection extends StatelessWidget {
+  const _PreviewSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Previa final',
+      subtitle: 'Texto renderizado apos substituir as variaveis.',
+      icon: Icons.preview_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      child: Container(
+        width: double.infinity,
+        constraints: const BoxConstraints(minHeight: 220),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141821),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: const Color(0xFFD4AF37).withValues(alpha: 0.32),
+          ),
+        ),
+        child: SelectableText(
+          vm.preview.isEmpty
+              ? 'A previa das mensagens vai aparecer aqui.'
+              : vm.preview,
+          style: const TextStyle(height: 1.45),
+        ),
+      ),
+    );
+  }
+}
+
+class _ResultsSection extends StatelessWidget {
+  const _ResultsSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
+
+  final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    return SectionCard(
+      title: 'Resultado de envios',
+      subtitle: '${vm.sendResults.length} registro(s)',
+      icon: Icons.checklist_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      child: ResultList(results: vm.sendResults),
+    );
+  }
+}
+
 // ============================================================
 // SEÇÃO DE PLANILHA (upload + filtros + resumo)
 // ============================================================
 
 class _SpreadsheetSection extends StatelessWidget {
-  const _SpreadsheetSection({required this.vm});
+  const _SpreadsheetSection({
+    required this.vm,
+    required this.allExpandedNotifier,
+  });
 
   final TemplateViewModel vm;
+  final ValueNotifier<bool> allExpandedNotifier;
 
   @override
   Widget build(BuildContext context) {
@@ -377,6 +630,8 @@ class _SpreadsheetSection extends StatelessWidget {
           ? '${vm.spreadsheetFileName} — ${vm.filteredServers.length} servidor(es) filtrado(s)'
           : 'Carregue um arquivo .xlsx para envio em massa.',
       icon: Icons.upload_file_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
       trailing: vm.hasSpreadsheet
           ? IconButton(
               onPressed: vm.clearSpreadsheet,
@@ -444,7 +699,7 @@ class _UploadDropZone extends StatelessWidget {
               ),
               SizedBox(height: 4),
               Text(
-                'Servidores sem emprestimos ou com marcação de cor serão ignorados',
+                'Servidores sem emprestimos validos serao ignorados',
                 style: TextStyle(color: Color(0xFF8891A4), fontSize: 11),
                 textAlign: TextAlign.center,
               ),
@@ -588,7 +843,7 @@ class _ServerSummary extends StatelessWidget {
     final countSelected = servers.where((s) => s.isSelected).length;
 
     return Container(
-      constraints: const BoxConstraints(maxHeight: 220),
+      constraints: const BoxConstraints(maxHeight: 360),
       decoration: BoxDecoration(
         color: const Color(0xFF141821),
         borderRadius: BorderRadius.circular(12),
@@ -730,49 +985,264 @@ class _ServerSummary extends StatelessWidget {
 // ============================================================
 
 class _RightColumn extends StatelessWidget {
-  const _RightColumn({required this.vm});
+  const _RightColumn({
+    required this.vm,
+    required this.isDesktop,
+    required this.allExpandedNotifier,
+  });
 
   final TemplateViewModel vm;
+  final bool isDesktop;
+  final ValueNotifier<bool> allExpandedNotifier;
 
   @override
   Widget build(BuildContext context) {
+    if (isDesktop) {
+      return Column(
+        children: [
+          if (vm.feedbackMessage != null) ...[
+            _FeedbackBanner(message: vm.feedbackMessage!),
+            const SizedBox(height: 16),
+          ],
+          _DynamicDataSection(
+            vm: vm,
+            allExpandedNotifier: allExpandedNotifier,
+          ),
+          const SizedBox(height: 16),
+          _DestinationIntervalSection(
+            vm: vm,
+            allExpandedNotifier: allExpandedNotifier,
+          ),
+          const SizedBox(height: 16),
+          _AutoReplySection(allExpandedNotifier: allExpandedNotifier),
+          const SizedBox(height: 16),
+          _PreviewSection(
+            vm: vm,
+            allExpandedNotifier: allExpandedNotifier,
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
         if (vm.feedbackMessage != null) ...[
           _FeedbackBanner(message: vm.feedbackMessage!),
           const SizedBox(height: 16),
         ],
-        SectionCard(
-          title: 'Previa final',
-          subtitle: 'Texto renderizado apos substituir as variaveis.',
-          icon: Icons.preview_rounded,
-          child: Container(
-            width: double.infinity,
-            constraints: const BoxConstraints(minHeight: 220),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF141821),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: const Color(0xFFD4AF37).withValues(alpha: 0.32),
-              ),
-            ),
-            child: SelectableText(
-              vm.preview.isEmpty
-                  ? 'A previa das mensagens vai aparecer aqui.'
-                  : vm.preview,
-              style: const TextStyle(height: 1.45),
-            ),
-          ),
+        _PreviewSection(
+          vm: vm,
+          allExpandedNotifier: allExpandedNotifier,
         ),
         const SizedBox(height: 16),
-        SectionCard(
-          title: 'Resultado de envios',
-          subtitle: '${vm.sendResults.length} registro(s)',
-          icon: Icons.checklist_rounded,
-          child: ResultList(results: vm.sendResults),
+        _AutoReplySection(allExpandedNotifier: allExpandedNotifier),
+        const SizedBox(height: 16),
+        _ResultsSection(
+          vm: vm,
+          allExpandedNotifier: allExpandedNotifier,
         ),
       ],
+    );
+  }
+}
+
+class _AutoReplySection extends StatelessWidget {
+  const _AutoReplySection({required this.allExpandedNotifier});
+
+  final ValueNotifier<bool> allExpandedNotifier;
+
+  @override
+  Widget build(BuildContext context) {
+    final autoReplyVm = context.watch<AutoReplyViewModel>();
+
+    return SectionCard(
+      title: 'Resposta automatica',
+      subtitle: autoReplyVm.isEnabled
+          ? 'Monitorando mensagens recebidas...'
+          : 'Responde clientes enquanto voce trabalha.',
+      icon: Icons.smart_toy_rounded,
+      collapsible: true,
+      expansionNotifier: allExpandedNotifier,
+      trailing: Switch(
+        value: autoReplyVm.isEnabled,
+        onChanged: (_) => autoReplyVm.toggle(),
+        activeTrackColor: const Color(0xFF3ECF8E).withValues(alpha: 0.5),
+        activeThumbColor: const Color(0xFF3ECF8E),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Status
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: autoReplyVm.isEnabled
+                  ? const Color(0xFF3ECF8E).withValues(alpha: 0.08)
+                  : const Color(0xFF1A1F29),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: autoReplyVm.isEnabled
+                    ? const Color(0xFF3ECF8E).withValues(alpha: 0.3)
+                    : const Color(0xFF2A303B),
+              ),
+            ),
+            child: Row(
+              children: [
+                // Indicador pulsante
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 500),
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: autoReplyVm.isEnabled
+                        ? const Color(0xFF3ECF8E)
+                        : const Color(0xFF6B7280),
+                    boxShadow: autoReplyVm.isEnabled
+                        ? [
+                            BoxShadow(
+                              color: const Color(0xFF3ECF8E).withValues(alpha: 0.4),
+                              blurRadius: 6,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    autoReplyVm.isEnabled
+                        ? 'Sistema ativo — monitorando mensagens'
+                        : 'Sistema desativado',
+                    style: TextStyle(
+                      color: autoReplyVm.isEnabled
+                          ? const Color(0xFF3ECF8E)
+                          : const Color(0xFF8891A4),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          // Contadores
+          Row(
+            children: [
+              Expanded(
+                child: _AutoReplyCounter(
+                  icon: Icons.check_circle_outline_rounded,
+                  label: 'Respondidos hoje',
+                  count: autoReplyVm.repliedCount,
+                  color: const Color(0xFF3ECF8E),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _AutoReplyCounter(
+                  icon: Icons.hourglass_top_rounded,
+                  label: 'Na fila',
+                  count: autoReplyVm.queueCount,
+                  color: const Color(0xFFD4AF37),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          // Informação
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1A1F29),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Como funciona:',
+                  style: TextStyle(
+                    color: Color(0xFFD4AF37),
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+                SizedBox(height: 6),
+                Text(
+                  '• Detecta mensagens de clientes novos\n'
+                  '• Aguarda o envio em massa finalizar\n'
+                  '• Envia saudação personalizada (nome + horário)\n'
+                  '• Ignora cliente se você responder manualmente\n'
+                  '• Reset automático à meia-noite',
+                  style: TextStyle(
+                    color: Color(0xFF8891A4),
+                    fontSize: 11,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AutoReplyCounter extends StatelessWidget {
+  const _AutoReplyCounter({
+    required this.icon,
+    required this.label,
+    required this.count,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final int count;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF8891A4),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  count.toString(),
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
