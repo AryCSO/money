@@ -16,6 +16,7 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\windows\runner\resources\app_icon.ico
 
 [Languages]
 Name: "portuguesebrazilian"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"

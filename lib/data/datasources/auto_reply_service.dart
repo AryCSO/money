@@ -1,17 +1,17 @@
 import 'dart:async';
-import 'dart:collection';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
 import '../../core/utils/phone_utils.dart';
+import '../models/chat_message_payload.dart';
 import 'database_service.dart';
 import 'evolution_api_service.dart';
 
 class AutoReplyService {
-  AutoReplyService({
-    required EvolutionApiService evolutionApiService,
-  }) : _apiService = evolutionApiService;
+  AutoReplyService({required EvolutionApiService evolutionApiService})
+    : _apiService = evolutionApiService;
 
   static const Duration _firstSeenMessageWindow = Duration(minutes: 2);
 
@@ -172,17 +172,46 @@ class AutoReplyService {
               continue;
             }
 
-            if (_extractFromMe(message) != false) {
+            final fromMe = _extractFromMe(message);
+            if (fromMe == true) {
+              final outboundMessage = _buildOutboundMessageFromPayload(
+                message,
+                fallbackTimestamp: timestamp,
+              );
+              if (outboundMessage == null) {
+                continue;
+              }
+
+              final inserted = await _persistOutgoingMessage(
+                phone: phone,
+                sendTarget: _resolveSendTarget(
+                  conversationKey: phone,
+                  payload: chat,
+                  remoteJid: remoteJid,
+                ),
+                name: chatName,
+                message: outboundMessage,
+              );
+              if (inserted) {
+                persistedMessages++;
+              }
               continue;
             }
 
-            final text = _extractMessageText(message);
-            if (text.isEmpty) {
+            if (fromMe != false) {
               continue;
             }
 
-            final name = _extractPushName(message).isNotEmpty
-                ? _extractPushName(message)
+            final inboundMessage = _buildInboundMessageFromPayload(
+              message,
+              fallbackTimestamp: timestamp,
+            );
+            if (inboundMessage == null) {
+              continue;
+            }
+
+            final name = inboundMessage.name.isNotEmpty
+                ? inboundMessage.name
                 : chatName;
 
             final inserted = await _persistIncomingMessage(
@@ -193,11 +222,7 @@ class AutoReplyService {
                 remoteJid: remoteJid,
               ),
               name: name,
-              message: _InboundMessage(
-                text: text,
-                timestamp: timestamp ?? DateTime.now(),
-                name: name,
-              ),
+              message: inboundMessage.copyWith(name: name),
             );
             if (inserted) {
               persistedMessages++;
@@ -205,6 +230,10 @@ class AutoReplyService {
           }
         } else {
           final fallbackInbound = _buildInboundMessageFromPayload(
+            chat,
+            fallbackTimestamp: latestObserved,
+          );
+          final fallbackOutbound = _buildOutboundMessageFromPayload(
             chat,
             fallbackTimestamp: latestObserved,
           );
@@ -222,6 +251,22 @@ class AutoReplyService {
                   ? fallbackInbound.name
                   : chatName,
               message: fallbackInbound,
+            );
+            if (inserted) {
+              persistedMessages++;
+            }
+          } else if (fallbackOutbound != null &&
+              (visibleFrom == null ||
+                  !fallbackOutbound.timestamp.isBefore(visibleFrom))) {
+            final inserted = await _persistOutgoingMessage(
+              phone: phone,
+              sendTarget: _resolveSendTarget(
+                conversationKey: phone,
+                payload: chat,
+                remoteJid: remoteJid,
+              ),
+              name: chatName,
+              message: fallbackOutbound,
             );
             if (inserted) {
               persistedMessages++;
@@ -255,21 +300,20 @@ class AutoReplyService {
   Future<void> sendManualChatMessage({
     required String phone,
     String? sendTarget,
-    required String text,
+    required ChatMessagePayload payload,
     String name = '',
   }) async {
     final normalizedPhone = PhoneUtils.normalize(phone);
-    final content = text.trim();
+    final normalizedPayload = _normalizeOutgoingPayload(payload);
 
     if (normalizedPhone.isEmpty) {
       throw ArgumentError('Telefone invalido para envio.');
     }
-    if (content.isEmpty) {
-      throw ArgumentError('Digite uma mensagem antes de enviar.');
+    if (!_canSendPayload(normalizedPayload)) {
+      throw ArgumentError('Selecione um conteudo antes de enviar.');
     }
 
     markAsManuallyAnswered(normalizedPhone);
-    final sentAt = DateTime.now();
     final targets = await _buildManualSendTargets(
       conversationKey: normalizedPhone,
       contactName: name,
@@ -284,22 +328,19 @@ class AutoReplyService {
 
     for (final target in targets) {
       try {
-        await _apiService.sendPresence(
-          number: target,
-          presence: 'composing',
+        await _apiService.sendPresence(number: target, presence: 'composing');
+        final sentPayload = await _sendManualPayload(
+          target: target,
+          payload: normalizedPayload,
         );
-        await _apiService.sendText(
-          number: target,
-          text: content,
-          delay: 0,
-        );
+        final sentAt = DateTime.now();
 
-        await DatabaseService.instance.registrarMensagem(
+        await _storeConversationPayload(
           telefone: normalizedPhone,
           nomeCliente: name,
           destinoEnvio: target,
           direcao: 'enviada_manual',
-          conteudo: content,
+          payload: sentPayload,
           registradoEm: sentAt,
         );
 
@@ -321,6 +362,172 @@ class AutoReplyService {
 
     if (lastError != null) {
       throw lastError;
+    }
+  }
+
+  ChatMessagePayload _normalizeOutgoingPayload(ChatMessagePayload payload) {
+    final messageType = payload.messageType.trim().isEmpty
+        ? ChatMessageTypes.text
+        : payload.messageType.trim();
+    final content = payload.content.trim();
+    final fileName = payload.fileName.trim();
+    final mimeType = payload.mimeType.trim();
+    final mediaUrl = payload.mediaUrl.trim();
+    final locationName = payload.locationName.trim();
+    final locationAddress = payload.locationAddress.trim();
+
+    return payload.copyWith(
+      content: content,
+      messageType: messageType,
+      fileName: fileName,
+      mimeType: mimeType,
+      mediaUrl: mediaUrl,
+      locationName: locationName.isEmpty && payload.isLocation
+          ? 'Localizacao compartilhada'
+          : locationName,
+      locationAddress: locationAddress,
+    );
+  }
+
+  bool _canSendPayload(ChatMessagePayload payload) {
+    if (payload.isLocation) {
+      return payload.hasLocation;
+    }
+    if (payload.isMedia) {
+      return payload.hasFileBytes || payload.mediaUrl.trim().isNotEmpty;
+    }
+    return payload.content.trim().isNotEmpty;
+  }
+
+  Future<ChatMessagePayload> _sendManualPayload({
+    required String target,
+    required ChatMessagePayload payload,
+  }) async {
+    if (payload.isText) {
+      await _apiService.sendText(
+        number: target,
+        text: payload.content,
+        delay: 0,
+      );
+      return payload;
+    }
+
+    if (payload.isLocation) {
+      final latitude = payload.latitude;
+      final longitude = payload.longitude;
+      if (latitude == null || longitude == null) {
+        throw ArgumentError('Localizacao invalida para envio.');
+      }
+
+      final locationName = payload.locationName.trim().isEmpty
+          ? 'Localizacao compartilhada'
+          : payload.locationName.trim();
+      final locationAddress = payload.locationAddress.trim().isEmpty
+          ? _formatCoordinates(latitude, longitude)
+          : payload.locationAddress.trim();
+      final response = await _apiService.sendLocation(
+        number: target,
+        latitude: latitude,
+        longitude: longitude,
+        name: locationName,
+        address: locationAddress,
+        delay: 0,
+      );
+
+      return payload.copyWith(
+        messageId: _extractMessageId(response).isEmpty
+            ? payload.messageId
+            : _extractMessageId(response),
+        locationName: locationName,
+        locationAddress: locationAddress,
+      );
+    }
+
+    if (!payload.isMedia) {
+      throw ArgumentError('Tipo de mensagem nao suportado para envio manual.');
+    }
+
+    final mediaType = _mapPayloadTypeToMediaApiType(payload.messageType);
+    if (mediaType.isEmpty) {
+      throw ArgumentError('Tipo de anexo nao suportado para envio.');
+    }
+
+    final fileBytes = payload.fileBytes;
+    if (fileBytes == null || fileBytes.isEmpty) {
+      throw ArgumentError('Nao foi possivel ler o arquivo selecionado.');
+    }
+
+    final fileName = payload.fileName.trim().isEmpty
+        ? _defaultFileNameForType(payload.messageType, payload.mimeType)
+        : payload.fileName.trim();
+    final mimeType = payload.mimeType.trim().isEmpty
+        ? 'application/octet-stream'
+        : payload.mimeType.trim();
+    final response = await _apiService.sendMedia(
+      number: target,
+      mediaType: mediaType,
+      fileBytes: fileBytes,
+      mimeType: mimeType,
+      fileName: fileName,
+      caption: payload.content,
+      delay: 0,
+    );
+
+    final messageId = _extractMessageId(response);
+    final mediaUrl = _extractMediaUrl(response);
+    final remotePayload = _extractChatMessagePayload(response);
+
+    return payload.copyWith(
+      messageId: messageId.isEmpty ? payload.messageId : messageId,
+      fileName: remotePayload?.fileName.trim().isNotEmpty == true
+          ? remotePayload!.fileName
+          : fileName,
+      mimeType: remotePayload?.mimeType.trim().isNotEmpty == true
+          ? remotePayload!.mimeType
+          : mimeType,
+      fileSize: remotePayload?.fileSize ?? payload.fileSize,
+      mediaUrl: mediaUrl.isEmpty
+          ? (remotePayload?.mediaUrl ?? payload.mediaUrl)
+          : mediaUrl,
+    );
+  }
+
+  Future<bool> _storeConversationPayload({
+    required String telefone,
+    required String nomeCliente,
+    required String destinoEnvio,
+    required String direcao,
+    required ChatMessagePayload payload,
+    required DateTime registradoEm,
+  }) async {
+    try {
+      await DatabaseService.instance.registrarMensagem(
+        telefone: telefone,
+        nomeCliente: nomeCliente,
+        destinoEnvio: destinoEnvio,
+        direcao: direcao,
+        conteudo: payload.content,
+        tipoMsg: payload.messageType,
+        mensagemId: payload.messageId,
+        arquivoNome: payload.fileName,
+        arquivoMime: payload.mimeType,
+        arquivoTamanho: payload.fileSize,
+        arquivoDados: payload.fileBytes,
+        mediaUrl: payload.mediaUrl,
+        latitude: payload.latitude,
+        longitude: payload.longitude,
+        localNome: payload.locationName,
+        localEndereco: payload.locationAddress,
+        registradoEm: registradoEm,
+      );
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          'AutoReplyService: erro ao salvar mensagem em conversas: $e',
+        );
+      }
+      return false;
     }
   }
 
@@ -508,11 +715,13 @@ class AutoReplyService {
           _pendingQueue.remove(phone);
 
           try {
-            await DatabaseService.instance.registrarMensagem(
+            await _storeConversationPayload(
               telefone: phone,
               nomeCliente: name,
+              destinoEnvio: phone,
               direcao: 'enviada_auto',
-              conteudo: message,
+              payload: ChatMessagePayload(content: message),
+              registradoEm: DateTime.now(),
             );
             await DatabaseService.instance.registrarEnvio(
               telefoneCompleto: phone,
@@ -536,7 +745,9 @@ class AutoReplyService {
           }
         } catch (e) {
           if (kDebugMode) {
-            debugPrint('AutoReplyService: erro ao enviar auto-reply para $phone: $e');
+            debugPrint(
+              'AutoReplyService: erro ao enviar auto-reply para $phone: $e',
+            );
           }
         }
       }
@@ -570,17 +781,13 @@ class AutoReplyService {
         continue;
       }
 
-      final text = _extractMessageText(message);
-      final timestamp = _extractMessageTimestamp(message) ?? fallbackTimestamp;
-      if (text.isEmpty || timestamp == null) {
+      final candidate = _buildInboundMessageFromPayload(
+        message,
+        fallbackTimestamp: fallbackTimestamp,
+      );
+      if (candidate == null) {
         continue;
       }
-
-      final candidate = _InboundMessage(
-        text: text,
-        timestamp: timestamp,
-        name: _extractPushName(message),
-      );
       if (latestInbound == null ||
           candidate.timestamp.isAfter(latestInbound.timestamp)) {
         latestInbound = candidate;
@@ -600,24 +807,32 @@ class AutoReplyService {
     required String name,
     required _InboundMessage message,
   }) async {
-    try {
-      await DatabaseService.instance.registrarMensagem(
-        telefone: phone,
-        nomeCliente: name,
-        destinoEnvio: sendTarget,
-        direcao: 'recebida',
-        conteudo: message.text,
-        registradoEm: message.timestamp,
-      );
-      return true;
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint(
-          'AutoReplyService: erro ao salvar mensagem recebida em conversas: $e',
-        );
-      }
-      return false;
-    }
+    final payload = await _prepareIncomingPayloadForStorage(message.payload);
+    return _storeConversationPayload(
+      telefone: phone,
+      nomeCliente: name,
+      destinoEnvio: sendTarget,
+      direcao: 'recebida',
+      payload: payload,
+      registradoEm: message.timestamp,
+    );
+  }
+
+  Future<bool> _persistOutgoingMessage({
+    required String phone,
+    required String sendTarget,
+    required String name,
+    required _InboundMessage message,
+  }) async {
+    final payload = await _prepareIncomingPayloadForStorage(message.payload);
+    return _storeConversationPayload(
+      telefone: phone,
+      nomeCliente: name,
+      destinoEnvio: sendTarget,
+      direcao: 'enviada_manual',
+      payload: payload,
+      registradoEm: message.timestamp,
+    );
   }
 
   _InboundMessage? _buildInboundMessageFromPayload(
@@ -629,16 +844,361 @@ class AutoReplyService {
       return null;
     }
 
+    final messagePayload = _extractChatMessagePayload(payload);
+    if (messagePayload == null || messagePayload.previewText.trim().isEmpty) {
+      return null;
+    }
+
+    return _InboundMessage(
+      payload: messagePayload,
+      timestamp:
+          _extractMessageTimestamp(payload) ??
+          fallbackTimestamp ??
+          DateTime.now(),
+      name: _extractPushName(payload),
+    );
+  }
+
+  _InboundMessage? _buildOutboundMessageFromPayload(
+    Map<String, dynamic> payload, {
+    DateTime? fallbackTimestamp,
+  }) {
+    final fromMe = _extractFromMe(payload);
+    if (fromMe != true) {
+      return null;
+    }
+
+    final messagePayload = _extractChatMessagePayload(payload);
+    if (messagePayload == null || messagePayload.previewText.trim().isEmpty) {
+      return null;
+    }
+
+    return _InboundMessage(
+      payload: messagePayload,
+      timestamp:
+          _extractMessageTimestamp(payload) ??
+          fallbackTimestamp ??
+          DateTime.now(),
+      name: _extractPushName(payload),
+    );
+  }
+
+  Future<ChatMessagePayload> _prepareIncomingPayloadForStorage(
+    ChatMessagePayload payload,
+  ) async {
+    if (!payload.isMedia || payload.hasFileBytes) {
+      return payload;
+    }
+
+    final mediaUrl = payload.mediaUrl.trim();
+    if (mediaUrl.isEmpty) {
+      return payload;
+    }
+
+    final bytes = await _apiService.downloadBinary(mediaUrl);
+    if (bytes == null || bytes.isEmpty) {
+      return payload;
+    }
+
+    return payload.copyWith(
+      fileBytes: bytes,
+      fileSize: payload.fileSize > 0 ? payload.fileSize : bytes.length,
+    );
+  }
+
+  ChatMessagePayload? _extractChatMessagePayload(Map<String, dynamic> payload) {
+    final messageId = _extractMessageId(payload);
+
+    final locationMessage = _extractFirstMap(<dynamic>[
+      _getNested(payload, const ['message', 'locationMessage']),
+      _getNested(payload, const ['message', 'liveLocationMessage']),
+      payload['locationMessage'],
+      payload['liveLocationMessage'],
+    ]);
+    if (locationMessage != null) {
+      final latitude = _asDouble(
+        locationMessage['degreesLatitude'] ?? locationMessage['latitude'],
+      );
+      final longitude = _asDouble(
+        locationMessage['degreesLongitude'] ?? locationMessage['longitude'],
+      );
+      if (latitude != null && longitude != null) {
+        return ChatMessagePayload(
+          messageType: ChatMessageTypes.location,
+          messageId: messageId,
+          latitude: latitude,
+          longitude: longitude,
+          locationName: _firstNonEmptyString(<dynamic>[
+            locationMessage['name'],
+            payload['name'],
+          ]),
+          locationAddress: _firstNonEmptyString(<dynamic>[
+            locationMessage['address'],
+            payload['address'],
+          ]),
+        );
+      }
+    }
+
+    final imageMessage = _extractFirstMap(<dynamic>[
+      _getNested(payload, const ['message', 'imageMessage']),
+      payload['imageMessage'],
+    ]);
+    if (imageMessage != null) {
+      return _buildMediaPayload(
+        payload: payload,
+        messageType: ChatMessageTypes.image,
+        messageMap: imageMessage,
+        messageId: messageId,
+      );
+    }
+
+    final videoMessage = _extractFirstMap(<dynamic>[
+      _getNested(payload, const ['message', 'videoMessage']),
+      payload['videoMessage'],
+    ]);
+    if (videoMessage != null) {
+      return _buildMediaPayload(
+        payload: payload,
+        messageType: ChatMessageTypes.video,
+        messageMap: videoMessage,
+        messageId: messageId,
+      );
+    }
+
+    final documentMessage = _extractFirstMap(<dynamic>[
+      _getNested(payload, const ['message', 'documentMessage']),
+      payload['documentMessage'],
+    ]);
+    if (documentMessage != null) {
+      return _buildMediaPayload(
+        payload: payload,
+        messageType: ChatMessageTypes.document,
+        messageMap: documentMessage,
+        messageId: messageId,
+      );
+    }
+
+    final audioMessage = _extractFirstMap(<dynamic>[
+      _getNested(payload, const ['message', 'audioMessage']),
+      payload['audioMessage'],
+    ]);
+    if (audioMessage != null) {
+      return _buildMediaPayload(
+        payload: payload,
+        messageType: ChatMessageTypes.audio,
+        messageMap: audioMessage,
+        messageId: messageId,
+      );
+    }
+
     final text = _extractMessageText(payload);
     if (text.isEmpty) {
       return null;
     }
 
-    return _InboundMessage(
-      text: text,
-      timestamp: _extractMessageTimestamp(payload) ?? fallbackTimestamp ?? DateTime.now(),
-      name: _extractPushName(payload),
+    return ChatMessagePayload(
+      content: text,
+      messageType: ChatMessageTypes.text,
+      messageId: messageId,
     );
+  }
+
+  ChatMessagePayload _buildMediaPayload({
+    required Map<String, dynamic> payload,
+    required String messageType,
+    required Map<String, dynamic> messageMap,
+    required String messageId,
+  }) {
+    final mimeType = _firstNonEmptyString(<dynamic>[
+      messageMap['mimetype'],
+      messageMap['mimeType'],
+      payload['mimetype'],
+    ]);
+    final fileName = _firstNonEmptyString(<dynamic>[
+      messageMap['fileName'],
+      messageMap['title'],
+      payload['fileName'],
+      _defaultFileNameForType(messageType, mimeType),
+    ]);
+    final mediaUrl = _extractMediaUrl(messageMap);
+    final caption = _firstNonEmptyString(<dynamic>[
+      messageMap['caption'],
+      payload['caption'],
+    ]);
+    final inlineBytes = _extractInlineBytes(messageMap);
+
+    return ChatMessagePayload(
+      content: caption,
+      messageType: messageType,
+      messageId: messageId,
+      fileName: fileName,
+      mimeType: mimeType,
+      fileSize: _asInt(
+        messageMap['fileLength'] ??
+            messageMap['fileSize'] ??
+            messageMap['size'],
+      ),
+      fileBytes: inlineBytes,
+      mediaUrl: mediaUrl,
+    );
+  }
+
+  String _extractMessageId(Map<String, dynamic> payload) {
+    return _firstNonEmptyString(<dynamic>[
+      payload['id'],
+      _getNested(payload, const ['key', 'id']),
+      _getNested(payload, const ['message', 'key', 'id']),
+      _getNested(payload, const ['lastMessage', 'key', 'id']),
+    ]);
+  }
+
+  String _extractMediaUrl(Map<String, dynamic> payload) {
+    return _firstNonEmptyString(<dynamic>[
+      payload['url'],
+      payload['mediaUrl'],
+      payload['directPath'],
+      _getNested(payload, const ['message', 'imageMessage', 'url']),
+      _getNested(payload, const ['message', 'videoMessage', 'url']),
+      _getNested(payload, const ['message', 'documentMessage', 'url']),
+      _getNested(payload, const ['imageMessage', 'url']),
+      _getNested(payload, const ['videoMessage', 'url']),
+      _getNested(payload, const ['documentMessage', 'url']),
+    ]);
+  }
+
+  Uint8List? _extractInlineBytes(Map<String, dynamic> payload) {
+    final candidates = <dynamic>[
+      payload['base64'],
+      payload['fileData'],
+      payload['data'],
+    ];
+
+    for (final candidate in candidates) {
+      if (candidate is Uint8List && candidate.isNotEmpty) {
+        return candidate;
+      }
+      if (candidate is List<int> && candidate.isNotEmpty) {
+        return Uint8List.fromList(candidate);
+      }
+      if (candidate is String) {
+        final decoded = _decodeBase64String(candidate);
+        if (decoded != null && decoded.isNotEmpty) {
+          return decoded;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  Uint8List? _decodeBase64String(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final normalized = trimmed.contains(',')
+        ? trimmed.substring(trimmed.indexOf(',') + 1)
+        : trimmed;
+    try {
+      return Uint8List.fromList(base64Decode(normalized));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Map<String, dynamic>? _extractFirstMap(List<dynamic> candidates) {
+    for (final candidate in candidates) {
+      if (candidate is Map<String, dynamic>) {
+        return candidate;
+      }
+      if (candidate is Map) {
+        return candidate.map((key, value) => MapEntry(key.toString(), value));
+      }
+    }
+    return null;
+  }
+
+  String _firstNonEmptyString(List<dynamic> candidates) {
+    for (final candidate in candidates) {
+      final text = candidate?.toString().trim() ?? '';
+      if (text.isNotEmpty && text.toLowerCase() != 'null') {
+        return text;
+      }
+    }
+    return '';
+  }
+
+  int _asInt(dynamic value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.toInt();
+    }
+    return int.tryParse(value?.toString() ?? '') ?? 0;
+  }
+
+  double? _asDouble(dynamic value) {
+    if (value is double) {
+      return value;
+    }
+    if (value is num) {
+      return value.toDouble();
+    }
+    final normalized = value?.toString().trim().replaceAll(',', '.');
+    if (normalized == null || normalized.isEmpty) {
+      return null;
+    }
+    return double.tryParse(normalized);
+  }
+
+  String _mapPayloadTypeToMediaApiType(String payloadType) {
+    switch (payloadType) {
+      case ChatMessageTypes.image:
+        return 'image';
+      case ChatMessageTypes.video:
+        return 'video';
+      case ChatMessageTypes.document:
+        return 'document';
+      default:
+        return '';
+    }
+  }
+
+  String _defaultFileNameForType(String messageType, String mimeType) {
+    final extension = _extensionFromMimeType(mimeType);
+    final suffix = extension.isEmpty ? '' : '.$extension';
+    switch (messageType) {
+      case ChatMessageTypes.image:
+        return 'imagem$suffix';
+      case ChatMessageTypes.video:
+        return 'video$suffix';
+      case ChatMessageTypes.document:
+        return 'documento$suffix';
+      case ChatMessageTypes.audio:
+        return 'audio$suffix';
+      default:
+        return 'arquivo$suffix';
+    }
+  }
+
+  String _extensionFromMimeType(String mimeType) {
+    final normalized = mimeType.trim().toLowerCase();
+    if (normalized.isEmpty || !normalized.contains('/')) {
+      return '';
+    }
+
+    final extension = normalized.split('/').last;
+    final separatorIndex = extension.indexOf(';');
+    return separatorIndex >= 0
+        ? extension.substring(0, separatorIndex)
+        : extension;
+  }
+
+  String _formatCoordinates(double latitude, double longitude) {
+    return '${latitude.toStringAsFixed(6)}, ${longitude.toStringAsFixed(6)}';
   }
 
   bool _shouldProcessFirstSeenMessage(DateTime timestamp) {
@@ -728,7 +1288,8 @@ class AutoReplyService {
     for (final candidate in candidates) {
       final trimmed = candidate.trim();
       if (trimmed.isNotEmpty &&
-          (trimmed.contains('@') || PhoneUtils.normalize(trimmed).length >= 10)) {
+          (trimmed.contains('@') ||
+              PhoneUtils.normalize(trimmed).length >= 10)) {
         return trimmed;
       }
     }
@@ -935,7 +1496,7 @@ class AutoReplyService {
     required String contactName,
     String? preferredTarget,
   }) async {
-    final orderedTargets = LinkedHashSet<String>();
+    final orderedTargets = <String>{};
 
     void addTarget(String? value) {
       final resolved = _normalizeManualTarget(value);
@@ -952,7 +1513,9 @@ class AutoReplyService {
 
     addTarget(await _discoverRemoteJidPhoneTarget(conversationKey));
     addTarget(preferredTarget);
-    for (final discovered in await _discoverConversationTargets(conversationKey)) {
+    for (final discovered in await _discoverConversationTargets(
+      conversationKey,
+    )) {
       addTarget(discovered);
     }
     addTarget(conversationKey);
@@ -969,16 +1532,14 @@ class AutoReplyService {
         return const [];
       }
 
-      final matches = LinkedHashSet<String>();
+      final matches = <String>{};
       for (final chat in chats) {
         final remoteJid = _extractRemoteJid(chat);
         if (remoteJid.isEmpty || remoteJid.contains('@g.us')) {
           continue;
         }
 
-        final identifiers = <String>{
-          _normalizeConversationKey(remoteJid),
-        };
+        final identifiers = <String>{_normalizeConversationKey(remoteJid)};
         for (final candidate in _extractSendTargetCandidates(chat)) {
           final normalized = _normalizeConversationKey(candidate);
           if (normalized.isNotEmpty) {
@@ -1045,9 +1606,7 @@ class AutoReplyService {
           continue;
         }
 
-        final identifiers = <String>{
-          _normalizeConversationKey(remoteJid),
-        };
+        final identifiers = <String>{_normalizeConversationKey(remoteJid)};
         for (final candidate in _extractSendTargetCandidates(chat)) {
           final normalized = _normalizeConversationKey(candidate);
           if (normalized.isNotEmpty) {
@@ -1089,7 +1648,9 @@ class AutoReplyService {
     return null;
   }
 
-  Iterable<String> _extractSendTargetCandidates(Map<String, dynamic> payload) sync* {
+  Iterable<String> _extractSendTargetCandidates(
+    Map<String, dynamic> payload,
+  ) sync* {
     final directCandidates = <String>[
       payload['remoteJidAlt']?.toString() ?? '',
       payload['senderPn']?.toString() ?? '',
@@ -1100,10 +1661,22 @@ class AutoReplyService {
       payload['chatId']?.toString() ?? '',
       _getNested(payload, const ['key', 'remoteJidAlt'])?.toString() ?? '',
       _getNested(payload, const ['key', 'remoteJid'])?.toString() ?? '',
-      _getNested(payload, const ['message', 'key', 'remoteJidAlt'])?.toString() ?? '',
-      _getNested(payload, const ['message', 'key', 'remoteJid'])?.toString() ?? '',
-      _getNested(payload, const ['message', 'contextInfo', 'participant'])?.toString() ?? '',
-      _getNested(payload, const ['contextInfo', 'participant'])?.toString() ?? '',
+      _getNested(payload, const [
+            'message',
+            'key',
+            'remoteJidAlt',
+          ])?.toString() ??
+          '',
+      _getNested(payload, const ['message', 'key', 'remoteJid'])?.toString() ??
+          '',
+      _getNested(payload, const [
+            'message',
+            'contextInfo',
+            'participant',
+          ])?.toString() ??
+          '',
+      _getNested(payload, const ['contextInfo', 'participant'])?.toString() ??
+          '',
     ];
 
     final seen = <String>{};
@@ -1182,8 +1755,11 @@ class AutoReplyService {
       _getNested(payload, const ['key', 'remoteJid'])?.toString() ?? '',
       _getNested(payload, const ['message', 'key', 'remoteJid'])?.toString() ??
           '',
-      _getNested(payload, const ['lastMessage', 'key', 'remoteJid'])
-              ?.toString() ??
+      _getNested(payload, const [
+            'lastMessage',
+            'key',
+            'remoteJid',
+          ])?.toString() ??
           '',
     ];
 
@@ -1291,12 +1867,24 @@ class AutoReplyService {
 
 class _InboundMessage {
   const _InboundMessage({
-    required this.text,
+    required this.payload,
     required this.timestamp,
     required this.name,
   });
 
-  final String text;
+  final ChatMessagePayload payload;
   final DateTime timestamp;
   final String name;
+
+  _InboundMessage copyWith({
+    ChatMessagePayload? payload,
+    DateTime? timestamp,
+    String? name,
+  }) {
+    return _InboundMessage(
+      payload: payload ?? this.payload,
+      timestamp: timestamp ?? this.timestamp,
+      name: name ?? this.name,
+    );
+  }
 }

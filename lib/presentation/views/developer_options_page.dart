@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/config/app_config_controller.dart';
+import '../../core/utils/app_toast.dart';
 import '../viewmodels/connection_viewmodel.dart';
 
 class DeveloperOptionsPage extends StatefulWidget {
@@ -37,12 +38,11 @@ class _DeveloperOptionsPageState extends State<DeveloperOptionsPage> {
     final success = config.updateBaseUrlFromInput(_baseUrlController.text);
     if (!success) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
+        AppToast.show(
+          context,
+          message:
               'Base URL invalida. Informe uma porta (ex: 50010) ou uma URL completa.',
-            ),
-          ),
+          type: ToastType.warning,
         );
       }
       setState(() => _isSaving = false);
@@ -53,8 +53,10 @@ class _DeveloperOptionsPageState extends State<DeveloperOptionsPage> {
     await connectionVm.initialize();
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Base URL atualizada para: ${config.baseUrl}')),
+      AppToast.show(
+        context,
+        message: 'Base URL atualizada para: ${config.baseUrl}',
+        type: ToastType.success,
       );
     }
 
@@ -104,7 +106,7 @@ class _DeveloperOptionsPageState extends State<DeveloperOptionsPage> {
                           decoration: const InputDecoration(
                             labelText: 'Base URL / Porta ngrok',
                             hintText:
-                                'http://localhost:51062 ou https://abc.ngrok-free.app',
+                                'http://localhost:52062 ou https://abc.ngrok-free.app',
                           ),
                         ),
                         const SizedBox(height: 12),

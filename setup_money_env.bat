@@ -33,7 +33,7 @@ set "MONEY_ROOT_DOCKER=%MONEY_ROOT:\=/%"
 
 set "EVO_IMAGE=atendai/evolution-api:v2.2.3"
 set "API_KEY=f0Y69k2b5yQWWtmLUs40UVtFWWBIhuWA"
-set "API_URL=http://localhost:51062"
+set "API_URL=http://localhost:52062"
 
 REM Cole aqui o token da sua conta ngrok:
 REM https://dashboard.ngrok.com/get-started/your-authtoken

@@ -10,6 +10,7 @@ class ServerData {
   final bool hasColor; // reservado para futura deteccao visual
   final String genero;
   bool isSelected;
+  bool alreadySent;
 
   ServerData({
     required this.nome,
@@ -22,6 +23,7 @@ class ServerData {
     required this.hasColor,
     required this.genero,
     this.isSelected = true,
+    this.alreadySent = false,
   });
 
   List<String> get parcelasFormatadas {

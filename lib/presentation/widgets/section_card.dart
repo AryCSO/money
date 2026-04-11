@@ -51,13 +51,17 @@ class _SectionCardState extends State<SectionCard> {
     super.initState();
     _isExpanded = widget.collapsible ? _readInitialExpansion() : true;
     _persistExpansion(_isExpanded);
-    _updateNotifierListener(oldNotifier: null, newNotifier: widget.expansionNotifier);
+    _updateNotifierListener(
+      oldNotifier: null,
+      newNotifier: widget.expansionNotifier,
+    );
   }
 
   @override
   void didUpdateWidget(covariant SectionCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final notifierChanged = oldWidget.expansionNotifier != widget.expansionNotifier;
+    final notifierChanged =
+        oldWidget.expansionNotifier != widget.expansionNotifier;
     if (notifierChanged) {
       _updateNotifierListener(
         oldNotifier: oldWidget.expansionNotifier,
@@ -72,7 +76,8 @@ class _SectionCardState extends State<SectionCard> {
     }
 
     if (!oldWidget.collapsible && widget.collapsible) {
-      final shouldExpand = widget.expansionNotifier?.value ?? widget.initiallyExpanded;
+      final shouldExpand =
+          widget.expansionNotifier?.value ?? widget.initiallyExpanded;
       if (_isExpanded != shouldExpand) {
         setState(() => _isExpanded = shouldExpand);
         _persistExpansion(shouldExpand);
@@ -80,7 +85,9 @@ class _SectionCardState extends State<SectionCard> {
       return;
     }
 
-    if (notifierChanged && widget.collapsible && widget.expansionNotifier != null) {
+    if (notifierChanged &&
+        widget.collapsible &&
+        widget.expansionNotifier != null) {
       final shouldExpand = widget.expansionNotifier!.value;
       if (_isExpanded != shouldExpand) {
         setState(() => _isExpanded = shouldExpand);
@@ -89,7 +96,10 @@ class _SectionCardState extends State<SectionCard> {
     }
   }
 
-  void _updateNotifierListener({ValueNotifier<bool>? oldNotifier, ValueNotifier<bool>? newNotifier}) {
+  void _updateNotifierListener({
+    ValueNotifier<bool>? oldNotifier,
+    ValueNotifier<bool>? newNotifier,
+  }) {
     if (oldNotifier != null && _notifierListener != null) {
       oldNotifier.removeListener(_notifierListener!);
     }
@@ -142,44 +152,82 @@ class _SectionCardState extends State<SectionCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                if (widget.icon != null) ...[
-                  Icon(
-                    widget.icon,
-                    size: 20,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                Expanded(
-                  child: Text(
-                    widget.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                if (widget.trailing != null || widget.collapsible)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (widget.trailing case final trailing?) trailing,
-                      if (widget.collapsible)
-                        IconButton(
-                          onPressed: _toggleExpanded,
-                          tooltip: _isExpanded ? 'Recolher card' : 'Expandir card',
-                          icon: Icon(
-                            _isExpanded
-                                ? Icons.keyboard_arrow_up_rounded
-                                : Icons.keyboard_arrow_down_rounded,
-                          ),
-                        ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final hasHeaderActions =
+                    widget.trailing != null || widget.collapsible;
+                final stackHeader =
+                    hasHeaderActions && constraints.maxWidth < 460;
+
+                final titleRow = Row(
+                  children: [
+                    if (widget.icon != null) ...[
+                      Icon(
+                        widget.icon,
+                        size: 20,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
                     ],
-                  ),
-              ],
+                    Expanded(
+                      child: Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+
+                final headerActions = hasHeaderActions
+                    ? Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (widget.trailing != null) widget.trailing!,
+                          if (widget.collapsible)
+                            IconButton(
+                              onPressed: _toggleExpanded,
+                              tooltip: _isExpanded
+                                  ? 'Recolher card'
+                                  : 'Expandir card',
+                              icon: Icon(
+                                _isExpanded
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
+                              ),
+                            ),
+                        ],
+                      )
+                    : null;
+
+                if (stackHeader) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      titleRow,
+                      if (headerActions case final actions?) ...[
+                        const SizedBox(height: 12),
+                        actions,
+                      ],
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Expanded(child: titleRow),
+                    if (headerActions case final actions?) ...[
+                      const SizedBox(width: 12),
+                      actions,
+                    ],
+                  ],
+                );
+              },
             ),
             if (widget.subtitle != null) ...[
               const SizedBox(height: 6),
@@ -191,10 +239,18 @@ class _SectionCardState extends State<SectionCard> {
                 ),
               ),
             ],
-            if (_isExpanded) ...[
-              const SizedBox(height: 16),
-              widget.child,
-            ],
+            AnimatedCrossFade(
+              firstChild: Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: widget.child,
+              ),
+              secondChild: const SizedBox.shrink(),
+              crossFadeState: _isExpanded
+                  ? CrossFadeState.showFirst
+                  : CrossFadeState.showSecond,
+              duration: const Duration(milliseconds: 250),
+              sizeCurve: Curves.easeInOut,
+            ),
           ],
         ),
       ),

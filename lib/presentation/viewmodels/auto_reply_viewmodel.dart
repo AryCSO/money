@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../../data/datasources/auto_reply_service.dart';
+import '../../data/models/chat_message_payload.dart';
 
 class AutoReplyViewModel extends ChangeNotifier {
   AutoReplyViewModel({required AutoReplyService autoReplyService})
@@ -65,13 +66,13 @@ class AutoReplyViewModel extends ChangeNotifier {
   Future<void> sendManualChatMessage({
     required String phone,
     String? sendTarget,
-    required String text,
+    required ChatMessagePayload payload,
     String name = '',
   }) async {
     await _service.sendManualChatMessage(
       phone: phone,
       sendTarget: sendTarget,
-      text: text,
+      payload: payload,
       name: name,
     );
     notifyListeners();

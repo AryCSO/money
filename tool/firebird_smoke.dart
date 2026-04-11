@@ -4,6 +4,6 @@ Future<void> main() async {
   final service = DatabaseService.instance;
   await service.database;
   final contacts = await service.getChatContacts();
-  print('firebird_smoke_ok contacts=${contacts.length}');
+  'firebird_smoke_ok contacts=${contacts.length}';
   await service.close();
 }

@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'app.dart';
 import 'core/config/app_config_controller.dart';
 import 'core/network/api_client.dart';
+import 'core/theme/theme_controller.dart';
 import 'data/datasources/auto_reply_service.dart';
 import 'data/datasources/database_service.dart';
 import 'data/datasources/evolution_api_service.dart';
@@ -21,6 +22,9 @@ import 'presentation/viewmodels/auto_reply_viewmodel.dart';
 import 'presentation/viewmodels/connection_viewmodel.dart';
 import 'presentation/viewmodels/template_viewmodel.dart';
 
+const _kDesktopInitialSize = Size(1360, 850);
+const _kDesktopMinimumSize = Size(820, 640);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -28,23 +32,26 @@ void main() async {
     await windowManager.ensureInitialized();
     windowManager.waitUntilReadyToShow(
       const WindowOptions(
-        size: Size(1360, 850),
-        minimumSize: Size(1100, 700),
+        size: _kDesktopInitialSize,
+        minimumSize: _kDesktopMinimumSize,
         center: true,
       ),
       () async {
+        await windowManager.setMinimumSize(_kDesktopMinimumSize);
         await windowManager.show();
         await windowManager.focus();
       },
     );
   }
 
-  // ── Inicializar banco de dados ──
-  try {
-    await DatabaseService.instance.database;
-  } catch (e) {
-    if (kDebugMode) {
-      debugPrint('Aviso: Falha ao inicializar banco de dados: $e');
+  // ── Inicializar banco de dados (apenas desktop) ──
+  if (!kIsWeb) {
+    try {
+      await DatabaseService.instance.database;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Aviso: Falha ao inicializar banco de dados: $e');
+      }
     }
   }
 
@@ -61,13 +68,12 @@ void main() async {
   final repository = EvolutionRepositoryImpl(apiService, sendHistoryService);
 
   // ── Serviço de Auto-Reply ──
-  final autoReplyService = AutoReplyService(
-    evolutionApiService: apiService,
-  );
+  final autoReplyService = AutoReplyService(evolutionApiService: apiService);
 
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider(create: (_) => ThemeController()),
         ChangeNotifierProvider.value(value: appConfig),
         Provider.value(value: repository),
         ChangeNotifierProvider(
@@ -80,13 +86,12 @@ void main() async {
         ),
         ChangeNotifierProvider(
           lazy: false,
-          create: (_) => AutoReplyViewModel(
-            autoReplyService: autoReplyService,
-          ),
+          create: (_) => AutoReplyViewModel(autoReplyService: autoReplyService),
         ),
         ChangeNotifierProxyProvider<AutoReplyViewModel, TemplateViewModel>(
           create: (_) => TemplateViewModel(
             sendBulkMessagesUseCase: SendBulkMessagesUseCase(repository),
+            sendHistoryService: sendHistoryService,
           ),
           update: (_, autoReplyVm, templateVm) {
             templateVm!.autoReplyViewModel = autoReplyVm;

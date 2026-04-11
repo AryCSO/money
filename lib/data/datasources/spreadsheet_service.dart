@@ -29,13 +29,22 @@ class SpreadsheetService {
 
     // Encontrar indices das colunas relevantes.
     final nomeCol = _findColumn(headers, 'NOME SERVIDOR');
-    final cargoCol = _findColumn(headers, 'CARGO PRINCIPAL');
+    final cargoCol = _findColumn(headers, 'CARGO PRINCIPAL') ??
+        _findColumn(headers, 'VINCULO PRINCIPAL') ??
+        _findColumn(headers, 'VÍNCULO PRINCIPAL');
     final tel2Col = _findColumn(headers, 'TELEFONE 2');
-    final dddCol = _findColumn(headers, 'DDD');
+    final tel1Col = _findColumn(headers, 'TELEFONE');
+    final dddCol = _findColumn(headers, 'DDD') ?? _findColumn(headers, 'ODD');
     final idadeCol = _findColumn(headers, 'IDADE');
+    final dataNascCol = _findColumn(headers, 'DFT DATA NASCIMENTO') ??
+        _findColumn(headers, 'DATA NASCIMENTO') ??
+        _findColumn(headers, 'DATA DE NASCIMENTO');
+    final sexoCol = _findColumn(headers, 'SEXO');
     final municipioCol = _findColumn(headers, 'MUNICIPIO LOTACAO') ??
         _findColumn(headers, 'MUNICÍPIO LOTAÇÃO') ??
-        _findColumn(headers, 'MUNICIPIO LOTAÇÃO');
+        _findColumn(headers, 'MUNICIPIO LOTAÇÃO') ??
+        _findColumn(headers, 'MUNICIPIO') ??
+        _findColumn(headers, 'MUNICÍPIO');
 
     // Colunas de emprestimo:
     // toda coluna apos "Telefone 2" que contenha "emprestimo" no nome.
@@ -54,7 +63,12 @@ class SpreadsheetService {
 
       final nome = _extractFirstName(rawNome);
       final cargo = _cellText(row, cargoCol);
-      final telefone = _cellText(row, tel2Col);
+
+      // Telefone: preferir TELEFONE 2, cair em TELEFONE se vazio.
+      String telefone = _cellText(row, tel2Col);
+      if (telefone.isEmpty) {
+        telefone = _cellText(row, tel1Col);
+      }
 
       // Ignorar telefones que comecam com "3".
       final cleanPhone = telefone.replaceAll(RegExp(r'\D'), '');
@@ -64,9 +78,17 @@ class SpreadsheetService {
 
       final ddd = _cellText(row, dddCol);
 
-      // Idade
+      // Idade: preferir coluna IDADE, cair em DFT DATA NASCIMENTO.
+      int idade = 0;
       final idadeRaw = _cellText(row, idadeCol);
-      final idade = int.tryParse(idadeRaw.replaceAll(RegExp(r'\D'), '')) ?? 0;
+      if (idadeRaw.isNotEmpty) {
+        idade = int.tryParse(idadeRaw.replaceAll(RegExp(r'\D'), '')) ?? 0;
+      } else {
+        final dataNascRaw = _cellText(row, dataNascCol);
+        if (dataNascRaw.isNotEmpty) {
+          idade = _calcIdadeFromDate(dataNascRaw);
+        }
+      }
 
       // Municipio
       final municipio = _cellText(row, municipioCol);
@@ -89,8 +111,14 @@ class SpreadsheetService {
         continue;
       }
 
+      // Genero: preferir coluna SEXO; fallback por heuristica do nome.
       String genero = 'Indefinido';
-      if (nome.isNotEmpty) {
+      final sexoRaw = _cellText(row, sexoCol).toUpperCase();
+      if (sexoRaw == 'M' || sexoRaw == 'MASCULINO') {
+        genero = 'Masculino';
+      } else if (sexoRaw == 'F' || sexoRaw == 'FEMININO') {
+        genero = 'Feminino';
+      } else if (nome.isNotEmpty) {
         final lowerNome = nome.toLowerCase();
         final lastChar = lowerNome[lowerNome.length - 1];
         if (lastChar == 'a' || lastChar == 'e') {
@@ -220,6 +248,49 @@ class SpreadsheetService {
     final normalized =
         text.replaceAll('.', '').replaceAll(',', '.').replaceAll(' ', '');
     return double.tryParse(normalized);
+  }
+
+  int _calcIdadeFromDate(String raw) {
+    // Suporta formatos: dd/MM/yyyy, dd-MM-yyyy, yyyy-MM-dd, numero serial Excel.
+    try {
+      // Serial Excel (numero de dias desde 1900-01-01).
+      final serial = double.tryParse(raw.replaceAll(',', '.'));
+      if (serial != null && serial > 1000) {
+        final excelEpoch = DateTime(1899, 12, 30);
+        final date = excelEpoch.add(Duration(days: serial.toInt()));
+        return _ageFromBirthDate(date);
+      }
+      // dd/MM/yyyy ou dd-MM-yyyy
+      final parts = raw.split(RegExp(r'[/\-]'));
+      if (parts.length == 3) {
+        int? year, month, day;
+        if (parts[0].length == 4) {
+          // yyyy-MM-dd
+          year = int.tryParse(parts[0]);
+          month = int.tryParse(parts[1]);
+          day = int.tryParse(parts[2]);
+        } else {
+          // dd/MM/yyyy
+          day = int.tryParse(parts[0]);
+          month = int.tryParse(parts[1]);
+          year = int.tryParse(parts[2]);
+        }
+        if (year != null && month != null && day != null) {
+          return _ageFromBirthDate(DateTime(year, month, day));
+        }
+      }
+    } catch (_) {}
+    return 0;
+  }
+
+  int _ageFromBirthDate(DateTime birth) {
+    final now = DateTime.now();
+    int age = now.year - birth.year;
+    if (now.month < birth.month ||
+        (now.month == birth.month && now.day < birth.day)) {
+      age--;
+    }
+    return age < 0 ? 0 : age;
   }
 
   String _extractFirstName(String fullName) {

@@ -1,14 +1,16 @@
+import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/phone_utils.dart';
 import '../../core/utils/template_engine.dart';
 import '../../data/datasources/database_service.dart';
+import '../../data/datasources/send_history_service.dart';
 import '../../data/datasources/spreadsheet_service.dart';
 import '../../data/models/message_job.dart';
 import '../../data/models/send_result.dart';
@@ -18,17 +20,24 @@ import '../../domain/usecases/send_bulk_messages_usecase.dart';
 import 'auto_reply_viewmodel.dart';
 
 class TemplateViewModel extends ChangeNotifier {
-  TemplateViewModel({required SendBulkMessagesUseCase sendBulkMessagesUseCase})
-    : _sendBulkMessagesUseCase = sendBulkMessagesUseCase;
+  TemplateViewModel({
+    required SendBulkMessagesUseCase sendBulkMessagesUseCase,
+    required SendHistoryService sendHistoryService,
+  }) : _sendBulkMessagesUseCase = sendBulkMessagesUseCase,
+       _sendHistoryService = sendHistoryService;
 
   final SendBulkMessagesUseCase _sendBulkMessagesUseCase;
+  final SendHistoryService _sendHistoryService;
 
   /// Referência ao auto-reply para coordenar envio em massa
   AutoReplyViewModel? autoReplyViewModel;
 
   /// Referência ao banco de dados
   final DatabaseService _db = DatabaseService.instance;
-  final SpreadsheetService _spreadsheetService = SpreadsheetService();
+
+  /// Debounce timer para preview
+  Timer? _previewDebounce;
+  static const _debounceDuration = Duration(milliseconds: 300);
 
   // ---- Template controllers ----
   final templateControllers = List.generate(6, (_) => TextEditingController());
@@ -62,12 +71,19 @@ class TemplateViewModel extends ChangeNotifier {
   String? cidadeSelecionada;
 
   // ---- Estado ----
-  List<String> savedTemplates = List.filled(6, '');
   bool isSending = false;
   List<SendResult> sendResults = [];
   String? feedbackMessage;
   int sendProgress = 0;
   int sendTotal = 0;
+  bool isLoadingSpreadsheet = false;
+  String spreadsheetLoadingMessage = 'Importando planilha...';
+
+  /// Modelos de mensagem salvos no banco
+  List<Map<String, dynamic>> savedModels = [];
+
+  /// Filtro de gênero para planilha: 'todos', 'M', 'F'
+  String genderFilter = 'todos';
 
   /// Retorna os servidores filtrados para exibição
   List<ServerData> get filteredServers => _filteredServers;
@@ -95,12 +111,7 @@ class TemplateViewModel extends ChangeNotifier {
   );
 
   List<String> get activeTemplates {
-    return List.generate(
-      6,
-      (i) => savedTemplates[i].isNotEmpty
-          ? savedTemplates[i]
-          : templateControllers[i].text,
-    );
+    return List.generate(6, (i) => templateControllers[i].text);
   }
 
   String get preview {
@@ -128,13 +139,21 @@ class TemplateViewModel extends ChangeNotifier {
   /// Abre o file picker e carrega a planilha Excel
   Future<void> pickAndLoadSpreadsheet() async {
     try {
+      isLoadingSpreadsheet = true;
+      spreadsheetLoadingMessage = 'Importando planilha...';
+      notifyListeners();
+
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx', 'xls'],
         withData: true,
       );
 
-      if (result == null || result.files.isEmpty) return;
+      if (result == null || result.files.isEmpty) {
+        isLoadingSpreadsheet = false;
+        notifyListeners();
+        return;
+      }
 
       final file = result.files.first;
 
@@ -150,12 +169,20 @@ class TemplateViewModel extends ChangeNotifier {
 
       if (bytes == null || bytes.isEmpty) {
         feedbackMessage = 'Erro: Nao foi possivel ler o arquivo.';
+        isLoadingSpreadsheet = false;
         notifyListeners();
         return;
       }
 
       spreadsheetFileName = file.name;
-      _allServers = _spreadsheetService.parseExcel(bytes);
+
+      // Offload parsing para Isolate para não travar a UI
+      spreadsheetLoadingMessage = 'Lendo planilha...';
+      notifyListeners();
+      _allServers = await compute(
+        _parseExcelInIsolate,
+        bytes,
+      );
 
       // Extrair cidades unicas dos servidores carregados
       final cidades = <String>{};
@@ -168,15 +195,52 @@ class TemplateViewModel extends ChangeNotifier {
       idadeMin = null;
       idadeMax = null;
       cidadeSelecionada = null;
+      genderFilter = 'todos';
+
+      // Verificar quais números já foram enviados nos últimos 30 dias
+      spreadsheetLoadingMessage = 'Verificando histórico de envios...';
+      notifyListeners();
+      await _markAlreadySentServers();
 
       _applyFilters();
 
-      feedbackMessage =
-          'Planilha "${file.name}" carregada: ${_allServers.length} servidor(es) com emprestimos validos.';
+      final alreadySentCount = _allServers.where((s) => s.alreadySent).length;
+      final newCount = _allServers.length - alreadySentCount;
+      feedbackMessage = alreadySentCount > 0
+          ? 'Planilha "${file.name}" carregada: $newCount novo(s), $alreadySentCount já enviado(s) desmarcado(s).'
+          : 'Planilha "${file.name}" carregada: ${_allServers.length} servidor(es).';
+      isLoadingSpreadsheet = false;
       notifyListeners();
     } catch (e) {
       feedbackMessage = 'Erro ao ler planilha: $e';
+      isLoadingSpreadsheet = false;
       notifyListeners();
+    }
+  }
+
+  /// Verifica quais servidores já foram enviados e os desmarca.
+  Future<void> _markAlreadySentServers() async {
+    final ddi = ddiController.text.trim().isEmpty ? '55' : ddiController.text.trim();
+
+    for (final server in _allServers) {
+      try {
+        final serverDdd = server.ddd.replaceAll(RegExp(r'\D'), '');
+        final serverPhone = server.telefone.replaceAll(RegExp(r'\D'), '');
+        if (serverPhone.isEmpty) continue;
+
+        final fullNumber = PhoneUtils.normalize('$ddi$serverDdd$serverPhone');
+        final sent = await _sendHistoryService.wasSentInLastDays(
+          fullNumber,
+          days: SendHistoryService.defaultLookbackDays,
+        );
+
+        if (sent) {
+          server.alreadySent = true;
+          server.isSelected = false;
+        }
+      } catch (_) {
+        // Falha silenciosa — não bloqueia o carregamento.
+      }
     }
   }
 
@@ -193,6 +257,10 @@ class TemplateViewModel extends ChangeNotifier {
           server.municipio.toUpperCase() != cidadeSelecionada!.toUpperCase()) {
         return false;
       }
+
+      // Filtro de gênero
+      if (genderFilter == 'M' && server.genero != 'Masculino') return false;
+      if (genderFilter == 'F' && server.genero != 'Feminino') return false;
 
       return true;
     }).toList();
@@ -241,6 +309,12 @@ class TemplateViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setGenderFilter(String value) {
+    genderFilter = value;
+    _applyFilters();
+    notifyListeners();
+  }
+
   void toggleServerSelection(ServerData server, bool selected) {
     server.isSelected = selected;
     _populatePreviewData();
@@ -273,6 +347,7 @@ class TemplateViewModel extends ChangeNotifier {
     idadeMin = null;
     idadeMax = null;
     cidadeSelecionada = null;
+    genderFilter = 'todos';
     sendProgress = 0;
     sendTotal = 0;
     feedbackMessage = null;
@@ -281,12 +356,55 @@ class TemplateViewModel extends ChangeNotifier {
 
   // =============== TEMPLATES ===============
 
-  void saveTemplate() {
-    for (int i = 0; i < 6; i++) {
-      savedTemplates[i] = templateControllers[i].text.trim();
+  /// Salva o template atual no banco de dados com um nome.
+  Future<void> saveTemplateToDatabase(String name) async {
+    final msgs = List.generate(6, (i) => templateControllers[i].text.trim());
+    if (msgs.every((m) => m.isEmpty)) {
+      feedbackMessage = 'Preencha pelo menos uma mensagem antes de salvar.';
+      notifyListeners();
+      return;
     }
-    feedbackMessage = 'Modelo salvo com sucesso.';
+    try {
+      await _db.salvarModelo(nome: name, mensagens: msgs);
+      feedbackMessage = 'Modelo "$name" salvo no banco de dados.';
+      await loadSavedModels();
+    } catch (e) {
+      feedbackMessage = 'Erro ao salvar modelo: $e';
+      notifyListeners();
+    }
+  }
+
+  /// Carrega todos os modelos salvos do banco de dados.
+  Future<void> loadSavedModels() async {
+    try {
+      savedModels = await _db.listarModelos();
+    } catch (e) {
+      debugPrint('Erro ao carregar modelos: $e');
+      savedModels = [];
+    }
     notifyListeners();
+  }
+
+  /// Carrega um modelo salvo nos campos de template.
+  void loadSavedModel(Map<String, dynamic> model) {
+    for (int i = 0; i < 6; i++) {
+      final key = 'msg${i + 1}';
+      templateControllers[i].text = (model[key]?.toString() ?? '').trim();
+    }
+    feedbackMessage = 'Modelo "${model['nome'] ?? ''}" carregado.';
+    updatePreview();
+  }
+
+  /// Exclui um modelo do banco de dados.
+  Future<void> deleteSavedModel(int id) async {
+    try {
+      await _db.excluirModelo(id);
+      feedbackMessage = 'Modelo excluído.';
+      await loadSavedModels();
+    } catch (e) {
+      feedbackMessage = 'Erro ao excluir modelo: $e';
+      notifyListeners();
+    }
   }
 
   void loadPredefinedTemplate(PredefinedTemplate template) {
@@ -296,14 +414,16 @@ class TemplateViewModel extends ChangeNotifier {
       } else {
         templateControllers[i].text = '';
       }
-      savedTemplates[i] = '';
     }
     feedbackMessage = 'Template "${template.name}" carregado.';
     updatePreview();
   }
 
   void updatePreview() {
-    notifyListeners();
+    _previewDebounce?.cancel();
+    _previewDebounce = Timer(_debounceDuration, () {
+      notifyListeners();
+    });
   }
 
   List<String> get tokensUsed {
@@ -438,7 +558,9 @@ class TemplateViewModel extends ChangeNotifier {
           genero: server.genero,
           parcelas: server.parcelas,
         );
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('Falha ao registrar cliente ${server.nome}: $e');
+      }
 
       if (serverPhone.length < 8) {
         final result = SendResult(
@@ -457,10 +579,15 @@ class TemplateViewModel extends ChangeNotifier {
             sucesso: false,
             mensagemStatus: 'Telefone invalido',
           );
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('Falha ao registrar envio invalido: $e');
+        }
 
         sendProgress = i + 1;
-        notifyListeners(); // ✅ RESULTADO EM TEMPO REAL
+        // Batch: notifica a cada 5 resultados ou no último
+        if (sendProgress % 5 == 0 || sendProgress == sendTotal) {
+          notifyListeners();
+        }
         continue;
       }
 
@@ -518,7 +645,9 @@ class TemplateViewModel extends ChangeNotifier {
               mensagemStatus: r.message,
               mensagemEnviada: r.success ? renderedMsgs.join('\n---\n') : '',
             );
-          } catch (_) {}
+          } catch (e) {
+            debugPrint('Falha ao registrar envio para $fullNumber: $e');
+          }
         }
       } catch (e) {
         final errorResult = SendResult(
@@ -536,11 +665,16 @@ class TemplateViewModel extends ChangeNotifier {
             sucesso: false,
             mensagemStatus: 'Erro: $e',
           );
-        } catch (_) {}
+        } catch (dbErr) {
+          debugPrint('Falha ao registrar erro de envio: $dbErr');
+        }
       }
 
       sendProgress = i + 1;
-      notifyListeners(); // ✅ RESULTADO EM TEMPO REAL
+      // Batch: notifica a cada 5 clientes ou no último
+      if (sendProgress % 5 == 0 || sendProgress == sendTotal || !isSending) {
+        notifyListeners();
+      }
 
       // Verificar cancelamento imediatamente após cada cliente
       if (!isSending) {
@@ -649,6 +783,7 @@ class TemplateViewModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _previewDebounce?.cancel();
     for (final controller in templateControllers) {
       controller.dispose();
     }
@@ -694,3 +829,8 @@ const predefinedTemplatesList = [
     '',
   ]),
 ];
+
+/// Top-level function para parsing de planilha em Isolate.
+List<ServerData> _parseExcelInIsolate(Uint8List bytes) {
+  return SpreadsheetService().parseExcel(bytes);
+}

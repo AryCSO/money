@@ -1,13 +1,17 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
 
 import '../../core/constants/app_constants.dart';
+import '../../core/network/api_client.dart';
 import '../models/instance_connection_state.dart';
 import '../models/qr_code_response.dart';
 
 class EvolutionApiService {
   EvolutionApiService(this._apiClient);
 
-  final dynamic _apiClient;
+  final ApiClient _apiClient;
 
   Future<void> createMoneyInstance() async {
     if (await _instanceExists()) {
@@ -128,19 +132,19 @@ class EvolutionApiService {
     final requests = <Future<Response<dynamic>> Function()>[
       // v2 – endpoint preferido
       () => _apiClient.dio.post(
-            '/chat/sendPresence/$instanceName',
-            data: {'number': number, 'presence': presence},
-          ),
+        '/chat/sendPresence/$instanceName',
+        data: {'number': number, 'presence': presence},
+      ),
       // v2 alternativo
       () => _apiClient.dio.put(
-            '/chat/sendPresence/$instanceName',
-            data: {'number': number, 'presence': presence},
-          ),
+        '/chat/sendPresence/$instanceName',
+        data: {'number': number, 'presence': presence},
+      ),
       // v1 / outras distribuições
       () => _apiClient.dio.post(
-            '/chat/presence/$instanceName',
-            data: {'number': number, 'presence': presence},
-          ),
+        '/chat/presence/$instanceName',
+        data: {'number': number, 'presence': presence},
+      ),
     ];
 
     for (final request in requests) {
@@ -187,17 +191,176 @@ class EvolutionApiService {
     }
   }
 
+  Future<Map<String, dynamic>> sendMedia({
+    required String number,
+    required String mediaType,
+    required Uint8List fileBytes,
+    required String mimeType,
+    required String fileName,
+    String caption = '',
+    int delay = AppConstants.defaultPresenceDelayMs,
+  }) async {
+    final encodedMedia = _buildBase64DataUri(
+      mimeType: mimeType,
+      bytes: fileBytes,
+    );
+    final instanceName = AppConstants.instanceName;
+    final requests = <Future<Response<dynamic>> Function()>[
+      () => _apiClient.dio.post(
+        '/message/sendMedia/$instanceName',
+        data: {
+          'number': number,
+          'mediatype': mediaType,
+          'mimetype': mimeType,
+          'caption': caption,
+          'media': encodedMedia,
+          'fileName': fileName,
+          'delay': delay,
+        },
+      ),
+      () => _apiClient.dio.post(
+        '/message/sendMedia/$instanceName',
+        data: {
+          'number': number,
+          'mediaMessage': {
+            'mediaType': mediaType,
+            'mimetype': mimeType,
+            'fileName': fileName,
+            'caption': caption,
+            'media': encodedMedia,
+          },
+          'options': {'delay': delay, 'presence': 'composing'},
+        },
+      ),
+    ];
+
+    DioException? lastError;
+
+    for (final request in requests) {
+      try {
+        final response = await request();
+        return _toResponseMap(response.data);
+      } on DioException catch (e) {
+        lastError = e;
+        if (_canTryAlternativeHistoryRequest(e)) {
+          continue;
+        }
+        throw _buildSendException(
+          prefix: 'Falha ao enviar anexo',
+          exception: e,
+        );
+      }
+    }
+
+    if (lastError != null) {
+      throw _buildSendException(
+        prefix: 'Falha ao enviar anexo',
+        exception: lastError,
+      );
+    }
+
+    throw Exception('Falha ao enviar anexo.');
+  }
+
+  Future<Map<String, dynamic>> sendLocation({
+    required String number,
+    required double latitude,
+    required double longitude,
+    required String name,
+    required String address,
+    int delay = AppConstants.defaultPresenceDelayMs,
+  }) async {
+    final instanceName = AppConstants.instanceName;
+    final requests = <Future<Response<dynamic>> Function()>[
+      () => _apiClient.dio.post(
+        '/message/sendLocation/$instanceName',
+        data: {
+          'number': number,
+          'name': name,
+          'address': address,
+          'latitude': latitude,
+          'longitude': longitude,
+          'delay': delay,
+        },
+      ),
+      () => _apiClient.dio.post(
+        '/message/sendLocation/$instanceName',
+        data: {
+          'number': number,
+          'locationMessage': {
+            'name': name,
+            'address': address,
+            'latitude': latitude,
+            'longitude': longitude,
+          },
+          'options': {'delay': delay, 'presence': 'composing'},
+        },
+      ),
+    ];
+
+    DioException? lastError;
+
+    for (final request in requests) {
+      try {
+        final response = await request();
+        return _toResponseMap(response.data);
+      } on DioException catch (e) {
+        lastError = e;
+        if (_canTryAlternativeHistoryRequest(e)) {
+          continue;
+        }
+        throw _buildSendException(
+          prefix: 'Falha ao enviar localizacao',
+          exception: e,
+        );
+      }
+    }
+
+    if (lastError != null) {
+      throw _buildSendException(
+        prefix: 'Falha ao enviar localizacao',
+        exception: lastError,
+      );
+    }
+
+    throw Exception('Falha ao enviar localizacao.');
+  }
+
+  Future<Uint8List?> downloadBinary(String url) async {
+    final trimmedUrl = url.trim();
+    if (trimmedUrl.isEmpty) {
+      return null;
+    }
+
+    try {
+      final response = await _apiClient.dio.get<dynamic>(
+        trimmedUrl,
+        options: Options(responseType: ResponseType.bytes),
+      );
+      final data = response.data;
+      if (data is Uint8List) {
+        return data;
+      }
+      if (data is List<int>) {
+        return Uint8List.fromList(data);
+      }
+      if (data is List) {
+        return Uint8List.fromList(data.cast<int>());
+      }
+      return null;
+    } on DioException {
+      return null;
+    }
+  }
+
   Future<List<Map<String, dynamic>>> findChats() async {
     final instanceName = AppConstants.instanceName;
     final requests = <Future<Response<dynamic>> Function()>[
       () => _apiClient.dio.post(
-            '/chat/findChats/$instanceName',
-            data: {'page': 1, 'limit': 2000},
-          ),
-      () => _apiClient.dio.post(
-            '/chat/findChats/$instanceName',
-            data: {},
-          ),
+        '/chat/findChats/$instanceName',
+        data: {'page': 1, 'limit': 2000},
+      ),
+      () => _apiClient.dio.post('/chat/findChats/$instanceName', data: {}),
       () => _apiClient.dio.get('/chat/findChats/$instanceName'),
     ];
 
@@ -230,31 +393,31 @@ class EvolutionApiService {
     final instanceName = AppConstants.instanceName;
     final requests = <Future<Response<dynamic>> Function()>[
       () => _apiClient.dio.post(
-            '/chat/findMessages/$instanceName',
-            data: {
-              'where': {
-                'key': {'remoteJid': remoteJid},
-              },
-              'page': 1,
-              'limit': limit,
-            },
-          ),
+        '/chat/findMessages/$instanceName',
+        data: {
+          'where': {
+            'key': {'remoteJid': remoteJid},
+          },
+          'page': 1,
+          'limit': limit,
+        },
+      ),
       () => _apiClient.dio.post(
-            '/chat/findMessages/$instanceName',
-            data: {
-              'where': {'key.remoteJid': remoteJid},
-              'page': 1,
-              'limit': limit,
-            },
-          ),
+        '/chat/findMessages/$instanceName',
+        data: {
+          'where': {'key.remoteJid': remoteJid},
+          'page': 1,
+          'limit': limit,
+        },
+      ),
       () => _apiClient.dio.post(
-            '/chat/findMessages/$instanceName',
-            data: {'remoteJid': remoteJid, 'limit': limit},
-          ),
+        '/chat/findMessages/$instanceName',
+        data: {'remoteJid': remoteJid, 'limit': limit},
+      ),
       () => _apiClient.dio.post(
-            '/chat/findMessages/$instanceName',
-            data: {'jid': remoteJid, 'limit': limit},
-          ),
+        '/chat/findMessages/$instanceName',
+        data: {'jid': remoteJid, 'limit': limit},
+      ),
     ];
 
     for (final request in requests) {
@@ -287,21 +450,17 @@ class EvolutionApiService {
     final nestedQr = data['qrcode'];
     final payload = nestedQr is Map<String, dynamic> ? nestedQr : data;
 
-    final pairingCode = (payload['pairingCode'] ??
-            payload['pairing'] ??
-            data['pairingCode'] ??
-            '')
-        .toString();
-    final code = (payload['code'] ??
-            payload['qr'] ??
-            data['code'] ??
-            '')
+    final pairingCode =
+        (payload['pairingCode'] ??
+                payload['pairing'] ??
+                data['pairingCode'] ??
+                '')
+            .toString();
+    final code = (payload['code'] ?? payload['qr'] ?? data['code'] ?? '')
         .toString();
     final base64 = (payload['base64'] ?? data['base64'] ?? '').toString();
-    final count = int.tryParse(
-          (payload['count'] ?? data['count'] ?? 0).toString(),
-        ) ??
-        0;
+    final count =
+        int.tryParse((payload['count'] ?? data['count'] ?? 0).toString()) ?? 0;
 
     return QrCodeResponse(
       pairingCode: pairingCode,
@@ -380,9 +539,7 @@ class EvolutionApiService {
   }
 
   Map<String, dynamic> _toStringDynamicMap(Map value) {
-    return value.map(
-      (key, dynamic val) => MapEntry(key.toString(), val),
-    );
+    return value.map((key, dynamic val) => MapEntry(key.toString(), val));
   }
 
   List<Map<String, dynamic>> _extractNestedMapList(dynamic value) {
@@ -458,5 +615,40 @@ class EvolutionApiService {
     }
 
     return data.toString().trim();
+  }
+
+  String _buildBase64DataUri({
+    required String mimeType,
+    required Uint8List bytes,
+  }) {
+    final normalizedMime = mimeType.trim().isEmpty
+        ? 'application/octet-stream'
+        : mimeType.trim();
+    return 'data:$normalizedMime;base64,${base64Encode(bytes)}';
+  }
+
+  Map<String, dynamic> _toResponseMap(dynamic data) {
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is Map) {
+      return _toStringDynamicMap(data);
+    }
+    return const {};
+  }
+
+  Exception _buildSendException({
+    required String prefix,
+    required DioException exception,
+  }) {
+    final status = exception.response?.statusCode;
+    final details = _describeDioError(exception.response?.data);
+    final statusText = status != null ? 'HTTP $status' : 'HTTP erro';
+
+    if (details.isNotEmpty) {
+      return Exception('$prefix ($statusText): $details');
+    }
+
+    return Exception('$prefix ($statusText).');
   }
 }
