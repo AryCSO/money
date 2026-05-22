@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -15,6 +16,7 @@ class EvolutionApiService {
 
   Future<void> createMoneyInstance() async {
     if (await _instanceExists()) {
+      await applyAntiBanSettings();
       return;
     }
 
@@ -25,6 +27,8 @@ class EvolutionApiService {
           'instanceName': AppConstants.instanceName,
           'integration': AppConstants.integration,
           'qrcode': true,
+          // Anti-ban: já cria a instância com settings seguros.
+          ...AppConstants.antiBanInstanceSettings,
         },
       );
     } on DioException catch (e) {
@@ -39,10 +43,37 @@ class EvolutionApiService {
           text.contains('exist');
 
       if (maybeAlreadyExists && await _instanceExists()) {
+        await applyAntiBanSettings();
         return;
       }
 
       rethrow;
+    }
+
+    await applyAntiBanSettings();
+  }
+
+  /// Aplica configurações anti-ban (rejectCall, groupsIgnore, etc.) na instância já criada.
+  /// Tenta várias rotas conhecidas da Evolution API; ignora falhas (fail-safe).
+  Future<void> applyAntiBanSettings() async {
+    final instanceName = AppConstants.instanceName;
+    final payload = AppConstants.antiBanInstanceSettings;
+
+    final requests = <Future<Response<dynamic>> Function()>[
+      () => _apiClient.dio.post('/settings/set/$instanceName', data: payload),
+      () => _apiClient.dio.put('/settings/set/$instanceName', data: payload),
+      () => _apiClient.dio.post('/instance/settings/$instanceName', data: payload),
+    ];
+
+    for (final request in requests) {
+      try {
+        await request();
+        return;
+      } on DioException catch (e) {
+        final status = e.response?.statusCode ?? 0;
+        if (status == 404 || status == 405) continue;
+        return; // Não trava o fluxo de criação por causa de settings.
+      }
     }
   }
 
@@ -168,7 +199,7 @@ class EvolutionApiService {
     required String text,
     int delay = AppConstants.defaultPresenceDelayMs,
   }) async {
-    try {
+    await _withBackoff(() async {
       await _apiClient.dio.post(
         '/message/sendText/${AppConstants.instanceName}',
         data: {
@@ -178,17 +209,41 @@ class EvolutionApiService {
           'linkPreview': false,
         },
       );
-    } on DioException catch (e) {
-      final status = e.response?.statusCode;
-      final details = _describeDioError(e.response?.data);
-      final statusText = status != null ? 'HTTP $status' : 'HTTP erro';
+    }, errorPrefix: 'Falha ao enviar mensagem');
+  }
 
-      if (details.isNotEmpty) {
-        throw Exception('Falha ao enviar mensagem ($statusText): $details');
+  /// Executa [action] com backoff exponencial em caso de 429/5xx.
+  /// Tentativas: 0ms, 2s, 4s, 8s. Erros 4xx (exceto 429) propagam imediatamente.
+  Future<T> _withBackoff<T>(
+    Future<T> Function() action, {
+    required String errorPrefix,
+    int maxAttempts = 4,
+  }) async {
+    DioException? lastError;
+
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await action();
+      } on DioException catch (e) {
+        lastError = e;
+        final status = e.response?.statusCode ?? 0;
+        final isRetriable = status == 429 || (status >= 500 && status <= 599);
+
+        if (!isRetriable || attempt == maxAttempts - 1) {
+          throw _buildSendException(prefix: errorPrefix, exception: e);
+        }
+
+        // Backoff: 2s, 4s, 8s (cap 30s) + jitter ±25%.
+        final baseMs = 2000 * (1 << attempt);
+        final cappedMs = baseMs > 30000 ? 30000 : baseMs;
+        final jitterMs = cappedMs ~/ 4;
+        final waitMs =
+            cappedMs + Random().nextInt(jitterMs * 2 + 1) - jitterMs;
+        await Future<void>.delayed(Duration(milliseconds: waitMs));
       }
-
-      throw Exception('Falha ao enviar mensagem ($statusText).');
     }
+
+    throw _buildSendException(prefix: errorPrefix, exception: lastError!);
   }
 
   Future<Map<String, dynamic>> sendMedia({
@@ -349,6 +404,148 @@ class EvolutionApiService {
       }
       return null;
     } on DioException {
+      return null;
+    }
+  }
+
+  /// Baixa o conteudo decifrado de uma midia do WhatsApp pela Evolution API.
+  ///
+  /// WhatsApp serve midias em URLs *criptografadas* (mmg.whatsapp.net, etc.) que
+  /// NAO podem ser baixadas via GET HTTP simples — precisam de chave + IV +
+  /// SHA256 para decifrar. A Evolution faz esse trabalho server-side e expoe o
+  /// resultado em base64 pela rota `getBase64FromMediaMessage`. Sem isso o
+  /// audio fica girando infinitamente e a imagem nunca renderiza.
+  ///
+  /// Tenta varias formas do payload aceitas por versoes diferentes da API.
+  /// Retorna null se nenhum endpoint conhecido decifrar a midia.
+  Future<Uint8List?> fetchMediaBase64({
+    required String messageId,
+    String? remoteJid,
+    bool fromMe = false,
+  }) async {
+    final id = messageId.trim();
+    if (id.isEmpty) {
+      return null;
+    }
+
+    final instanceName = AppConstants.instanceName;
+    final keyMap = <String, dynamic>{
+      'id': id,
+      if (remoteJid != null && remoteJid.trim().isNotEmpty)
+        'remoteJid': remoteJid.trim(),
+      'fromMe': fromMe,
+    };
+
+    final requests = <Future<Response<dynamic>> Function()>[
+      // Evolution v2 (formato canonico): { message: { key: { id, ... } } }.
+      () => _apiClient.dio.post(
+        '/chat/getBase64FromMediaMessage/$instanceName',
+        data: {
+          'message': {'key': keyMap},
+          'convertToMp4': false,
+        },
+      ),
+      // Variante aceita por algumas versoes: chave direta no body.
+      () => _apiClient.dio.post(
+        '/chat/getBase64FromMediaMessage/$instanceName',
+        data: {
+          'key': keyMap,
+          'convertToMp4': false,
+        },
+      ),
+      // Variante v1: id no path.
+      () => _apiClient.dio.post(
+        '/chat/getBase64FromMediaMessage/$instanceName/$id',
+        data: {'convertToMp4': false},
+      ),
+      // Algumas distribuicoes usam /message/... no lugar de /chat/...
+      () => _apiClient.dio.post(
+        '/message/getBase64FromMediaMessage/$instanceName',
+        data: {
+          'message': {'key': keyMap},
+          'convertToMp4': false,
+        },
+      ),
+    ];
+
+    DioException? lastError;
+    for (final request in requests) {
+      try {
+        final response = await request();
+        final bytes = _extractBase64Bytes(response.data);
+        if (bytes != null && bytes.isNotEmpty) {
+          return bytes;
+        }
+      } on DioException catch (e) {
+        lastError = e;
+        if (_canTryAlternativeHistoryRequest(e)) {
+          continue;
+        }
+        // Erro != 4xx-retentavel: aborta para evitar laco custoso.
+        break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    // Logamos silenciosamente: o chamador ainda pode tentar downloadBinary(url).
+    if (lastError != null) {
+      // ignore: avoid_print
+    }
+    return null;
+  }
+
+  Uint8List? _extractBase64Bytes(dynamic data) {
+    if (data is Map) {
+      final mapData = _toStringDynamicMap(data);
+      const candidates = <String>['base64', 'data', 'media', 'fileBase64'];
+      for (final key in candidates) {
+        final value = mapData[key];
+        if (value is String && value.trim().isNotEmpty) {
+          final decoded = _tryDecodeBase64(value);
+          if (decoded != null) {
+            return decoded;
+          }
+        }
+      }
+      // Resposta as vezes vem aninhada (ex.: { mediaMessage: { base64: ... } }).
+      for (final value in mapData.values) {
+        if (value is Map || value is List) {
+          final nested = _extractBase64Bytes(value);
+          if (nested != null) {
+            return nested;
+          }
+        }
+      }
+      return null;
+    }
+    if (data is List) {
+      for (final item in data) {
+        final nested = _extractBase64Bytes(item);
+        if (nested != null) {
+          return nested;
+        }
+      }
+      return null;
+    }
+    if (data is String) {
+      return _tryDecodeBase64(data);
+    }
+    return null;
+  }
+
+  Uint8List? _tryDecodeBase64(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    final normalized = trimmed.contains(',')
+        ? trimmed.substring(trimmed.indexOf(',') + 1)
+        : trimmed;
+    try {
+      final bytes = base64Decode(normalized);
+      return bytes.isEmpty ? null : Uint8List.fromList(bytes);
+    } catch (_) {
       return null;
     }
   }

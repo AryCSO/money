@@ -12,6 +12,9 @@ class DatabaseService {
   // O getter database não existe no web — stub para compatibilidade.
   Future<void> get database async {}
 
+  /// O Firebird não está disponível na web.
+  bool get isReady => false;
+
   Future<int> upsertCliente({
     required String nome,
     required String cargo,
@@ -72,8 +75,21 @@ class DatabaseService {
     DateTime? visibleFrom,
   }) async => [];
 
+  Future<void> markChatRead(String telefone) async {}
+
+  Future<void> updateConversaMediaBytes({
+    required String telefone,
+    required String mensagemId,
+    required Uint8List fileBytes,
+    int fileSize = 0,
+  }) async {}
+
   Future<List<Map<String, dynamic>>> getConversationTimeline(
     String telefone, {
+    DateTime? visibleFrom,
+  }) async => [];
+
+  Future<List<Map<String, dynamic>>> getPendingResponseClients({
     DateTime? visibleFrom,
   }) async => [];
 
@@ -88,5 +104,35 @@ class DatabaseService {
 
   Future<void> excluirModelo(int id) async {}
 
+  Future<List<Map<String, dynamic>>> getEnviosPorDia({int days = 7}) async => [];
+
+  Future<List<Map<String, dynamic>>> getMensagensRecebidasPorDia({int days = 7}) async => [];
+
+  Future<Map<String, int>> getEstatisticasGerais() async => {
+    'envios_total': 0,
+    'respostas_total': 0,
+    'envios_hoje': 0,
+    'falhas_hoje': 0,
+    'respostas_hoje': 0,
+  };
+
   Future<void> close() async {}
+
+  Future<Map<String, dynamic>?> autenticarUsuario({
+    required String email,
+    required String senha,
+  }) async => null;
+
+  Future<Map<String, dynamic>?> carregarUsuarioPorId(int id) async => null;
+
+  Future<bool> emailJaCadastrado(String email) async => false;
+
+  Future<bool> validarTokenAdmin(String token) async => false;
+
+  Future<int> registrarUsuario({
+    required String email,
+    required String senha,
+    required String nomeCompleto,
+    required String nomePreferido,
+  }) async => 0;
 }

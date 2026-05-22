@@ -78,6 +78,16 @@ class AutoReplyViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Baixa os bytes decifrados da midia (via Evolution `getBase64FromMediaMessage`)
+  /// e atualiza a linha em CONVERSAS para cachear o conteudo. Retorna o
+  /// payload atualizado (com `fileBytes`) ou o original se a decifragem falhou.
+  Future<ChatMessagePayload> ensureMediaBytes({
+    required String phone,
+    required ChatMessagePayload payload,
+  }) {
+    return _service.ensureMediaBytes(telefone: phone, payload: payload);
+  }
+
   void _onServiceChanged() {
     notifyListeners();
   }

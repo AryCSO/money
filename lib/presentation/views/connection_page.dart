@@ -550,7 +550,7 @@ class _UrlCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            'Informe a porta local ou URL completa da API Evolution',
+            'Informe a porta local ou URL de acesso',
             style: GoogleFonts.inter(
               color: AppColors.textMuted,
               fontSize: 12,

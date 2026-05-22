@@ -4,8 +4,10 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
+import '../../data/models/google_spreadsheet_file.dart';
 import '../../data/models/server_data.dart';
 import '../viewmodels/auto_reply_viewmodel.dart';
+import '../viewmodels/google_viewmodel.dart';
 import '../viewmodels/template_viewmodel.dart';
 import '../widgets/token_chip_list.dart';
 import '../widgets/whatsapp_bubble_preview.dart';
@@ -131,8 +133,6 @@ class _TemplateEditor extends StatefulWidget {
 }
 
 class _TemplateEditorState extends State<_TemplateEditor> {
-  bool _isTemplatesExpanded = true;
-
   @override
   void initState() {
     super.initState();
@@ -189,167 +189,65 @@ class _TemplateEditorState extends State<_TemplateEditor> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // ── Collapsible Templates Section ──
-        GestureDetector(
-          onTap: () => setState(() => _isTemplatesExpanded = !_isTemplatesExpanded),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceAlt,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.edit_note_rounded, color: AppColors.primaryLight, size: 16),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Templates e Mensagens',
-                        style: GoogleFonts.inter(
-                          color: AppColors.textPrimary,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Text(
-                        'Configure até 6 mensagens encadeadas',
-                        style: GoogleFonts.inter(
-                          color: AppColors.textMuted,
-                          fontSize: 11.5,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                AnimatedRotation(
-                  turns: _isTemplatesExpanded ? 0.5 : 0.0,
-                  duration: const Duration(milliseconds: 200),
-                  child: const Icon(Icons.keyboard_arrow_down_rounded, color: AppColors.textSecondary),
-                ),
-              ],
+        // ── Modelos Salvos (recolhivel independente) ──
+        _CollapsibleSection(
+          icon: Icons.folder_rounded,
+          title: 'Modelos Salvos',
+          subtitle: 'Carregue ou exclua um modelo salvo no banco',
+          headerTrailing: SizedBox(
+            width: 28,
+            height: 28,
+            child: IconButton(
+              onPressed: vm.loadSavedModels,
+              icon: const Icon(Icons.refresh_rounded, size: 15),
+              tooltip: 'Atualizar modelos',
+              padding: EdgeInsets.zero,
+              color: AppColors.textMuted,
             ),
           ),
-        ),
-        AnimatedCrossFade(
-          firstChild: Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Saved Models Tab ──
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceAlt,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.border),
+              if (vm.savedModels.isEmpty)
+                Text(
+                  'Nenhum modelo salvo ainda.',
+                  style: GoogleFonts.inter(
+                    color: AppColors.textMuted,
+                    fontSize: 12,
+                  ),
+                )
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: vm.savedModels.map((model) {
+                    return _SavedModelCard(
+                      model: model,
+                      onTap: () => vm.loadSavedModel(model),
+                      onDelete: () {
+                        final id = model['id'] is int
+                            ? model['id'] as int
+                            : int.tryParse(model['id']?.toString() ?? '') ?? 0;
+                        if (id > 0) vm.deleteSavedModel(id);
+                      },
+                    );
+                  }).toList(),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.folder_rounded, size: 16, color: AppColors.primaryLight),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Modelos Salvos',
-                          style: GoogleFonts.inter(
-                            color: AppColors.textPrimary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const Spacer(),
-                        SizedBox(
-                          width: 28,
-                          height: 28,
-                          child: IconButton(
-                            onPressed: vm.loadSavedModels,
-                            icon: const Icon(Icons.refresh_rounded, size: 15),
-                            tooltip: 'Atualizar modelos',
-                            padding: EdgeInsets.zero,
-                            color: AppColors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (vm.savedModels.isEmpty)
-                      Text(
-                        'Nenhum modelo salvo ainda.',
-                        style: GoogleFonts.inter(
-                          color: AppColors.textMuted,
-                          fontSize: 12,
-                        ),
-                      )
-                    else ...[
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        children: vm.savedModels.map((model) {
-                          final name = model['nome']?.toString() ?? 'Sem nome';
-                          final id = model['id'] is int ? model['id'] as int : int.tryParse(model['id']?.toString() ?? '') ?? 0;
-                          return Chip(
-                            label: Text(
-                              name,
-                              style: GoogleFonts.inter(
-                                color: AppColors.textPrimary,
-                                fontSize: 12,
-                              ),
-                            ),
-                            backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                            side: BorderSide(color: AppColors.primary.withValues(alpha: 0.3)),
-                            deleteIcon: const Icon(Icons.close, size: 14, color: AppColors.textMuted),
-                            onDeleted: () => vm.deleteSavedModel(id),
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            visualDensity: VisualDensity.compact,
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                          );
-                        }).toList(),
-                      ),
-                      const SizedBox(height: 6),
-                      SizedBox(
-                        height: 32,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: vm.savedModels.length,
-                          separatorBuilder: (context, index) => const SizedBox(width: 6),
-                          itemBuilder: (_, i) {
-                            final model = vm.savedModels[i];
-                            final name = model['nome']?.toString() ?? 'Sem nome';
-                            return ActionChip(
-                              label: Text(
-                                'Carregar "$name"',
-                                style: GoogleFonts.inter(fontSize: 11, color: AppColors.primaryLight),
-                              ),
-                              backgroundColor: AppColors.surfaceAlt,
-                              side: BorderSide(color: AppColors.primary.withValues(alpha: 0.2)),
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              onPressed: () => vm.loadSavedModel(model),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+
+        // ── Templates e Mensagens (recolhivel) ──
+        _CollapsibleSection(
+          icon: Icons.edit_note_rounded,
+          title: 'Templates e Mensagens',
+          subtitle: 'Configure até 6 mensagens encadeadas',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               ...List.generate(6, (i) => _TemplateField(index: i, vm: vm)),
               const SizedBox(height: 12),
-              // Save to DB button
               Row(
                 children: [
                   Expanded(
@@ -368,7 +266,7 @@ class _TemplateEditorState extends State<_TemplateEditor> {
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               _SectionHeader(
                 icon: Icons.tag_rounded,
                 title: 'Variáveis disponíveis',
@@ -376,15 +274,17 @@ class _TemplateEditorState extends State<_TemplateEditor> {
               ),
               const SizedBox(height: 10),
               TokenChipList(tokens: vm.tokensUsed),
-              const SizedBox(height: 24),
-              _ManualSendCard(vm: vm),
             ],
           ),
-          secondChild: const SizedBox.shrink(),
-          crossFadeState: _isTemplatesExpanded
-              ? CrossFadeState.showFirst
-              : CrossFadeState.showSecond,
-          duration: const Duration(milliseconds: 250),
+        ),
+        const SizedBox(height: 12),
+
+        // ── Envio Manual (recolhivel independente) ──
+        _CollapsibleSection(
+          icon: Icons.send_rounded,
+          title: 'Envio Manual',
+          subtitle: 'Envie para um número específico',
+          child: _ManualSendForm(vm: vm),
         ),
       ],
     );
@@ -489,28 +389,15 @@ class _TemplateField extends StatelessWidget {
   }
 }
 
-class _ManualSendCard extends StatelessWidget {
-  const _ManualSendCard({required this.vm});
+class _ManualSendForm extends StatelessWidget {
+  const _ManualSendForm({required this.vm});
   final TemplateViewModel vm;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceAlt,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SectionHeader(
-            icon: Icons.send_rounded,
-            title: 'Envio Manual',
-            subtitle: 'Envie para um número específico',
-          ),
-          const SizedBox(height: 14),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
           Row(
             children: [
               SizedBox(
@@ -635,8 +522,159 @@ class _ManualSendCard extends StatelessWidget {
             ),
           ),
         ],
+    );
+  }
+}
+
+/// Mini card unificado para um modelo salvo: clique no corpo carrega,
+/// X discreto no canto exclui. Substitui o par Chip+ActionChip antigo.
+class _SavedModelCard extends StatefulWidget {
+  const _SavedModelCard({
+    required this.model,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> model;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  @override
+  State<_SavedModelCard> createState() => _SavedModelCardState();
+}
+
+class _SavedModelCardState extends State<_SavedModelCard> {
+  bool _hovered = false;
+
+  int _countMessages() {
+    var count = 0;
+    for (var i = 1; i <= 6; i++) {
+      final text = (widget.model['msg$i']?.toString() ?? '').trim();
+      if (text.isNotEmpty) count++;
+    }
+    return count;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.model['nome']?.toString().trim().isNotEmpty == true
+        ? widget.model['nome'].toString()
+        : 'Sem nome';
+    final msgCount = _countMessages();
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+          decoration: BoxDecoration(
+            color: _hovered
+                ? AppColors.primary.withValues(alpha: 0.14)
+                : AppColors.primary.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: _hovered
+                  ? AppColors.primary.withValues(alpha: 0.55)
+                  : AppColors.primary.withValues(alpha: 0.28),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.description_rounded,
+                size: 14,
+                color: AppColors.primaryLight,
+              ),
+              const SizedBox(width: 6),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      style: GoogleFonts.inter(
+                        color: AppColors.textPrimary,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      '$msgCount mensagem${msgCount == 1 ? '' : 's'}',
+                      style: GoogleFonts.inter(
+                        color: AppColors.textMuted,
+                        fontSize: 10.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 4),
+              InkWell(
+                onTap: () => _confirmDelete(context, name),
+                borderRadius: BorderRadius.circular(4),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 14,
+                    color: _hovered
+                        ? AppColors.textSecondary
+                        : AppColors.textMuted,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, String name) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceAlt,
+        title: Text(
+          'Excluir modelo',
+          style: GoogleFonts.inter(
+            color: AppColors.textPrimary,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        content: Text(
+          'Excluir o modelo "$name"? Esta ação não pode ser desfeita.',
+          style: GoogleFonts.inter(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(
+              'Cancelar',
+              style: GoogleFonts.inter(color: AppColors.textSecondary),
+            ),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.error),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(
+              'Excluir',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) widget.onDelete();
   }
 }
 
@@ -646,16 +684,11 @@ class _PreviewPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _SectionHeader(
-          icon: Icons.phone_iphone_rounded,
-          title: 'Pré-visualização',
-          subtitle: 'Como o destinatário verá',
-        ),
-        const SizedBox(height: 16),
-        Container(
+    return _CollapsibleSection(
+      icon: Icons.phone_iphone_rounded,
+      title: 'Pré-visualização',
+      subtitle: 'Como o destinatário verá',
+      child: Container(
           decoration: BoxDecoration(
             color: const Color(0xFF0B141A),
             borderRadius: BorderRadius.circular(16),
@@ -723,7 +756,6 @@ class _PreviewPanel extends StatelessWidget {
             ),
           ),
         ),
-      ],
     );
   }
 }
@@ -791,6 +823,8 @@ class _SpreadsheetPanel extends StatelessWidget {
             const SizedBox(height: 14),
             // Upload button
             _UploadButton(vm: vm),
+            const SizedBox(height: 12),
+            _GoogleSheetsPicker(vm: vm),
             if (vm.hasSpreadsheet) ...[
               const SizedBox(height: 16),
               _GenderFilter(vm: vm),
@@ -915,6 +949,163 @@ class _UploadButton extends StatelessWidget {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Lista as planilhas do Google Drive do usuário (quando logado) para
+/// carregar diretamente no envio em massa, sem precisar baixar o arquivo.
+class _GoogleSheetsPicker extends StatefulWidget {
+  const _GoogleSheetsPicker({required this.vm});
+  final TemplateViewModel vm;
+
+  @override
+  State<_GoogleSheetsPicker> createState() => _GoogleSheetsPickerState();
+}
+
+class _GoogleSheetsPickerState extends State<_GoogleSheetsPicker> {
+  bool _expanded = false;
+  String? _loadingFileId;
+
+  Future<void> _loadFile(
+    GoogleViewModel googleVm,
+    GoogleSpreadsheetFile file,
+  ) async {
+    setState(() => _loadingFileId = file.id);
+    try {
+      final rows = await googleVm.fetchRows(file);
+      await widget.vm.loadFromRows(rows, file.name);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Falha ao carregar "${file.name}": $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingFileId = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final googleVm = context.watch<GoogleViewModel>();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: googleVm.isSignedIn
+                ? () => setState(() => _expanded = !_expanded)
+                : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  const Icon(Icons.cloud_rounded, size: 16, color: AppColors.info),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      googleVm.isSignedIn
+                          ? 'Planilhas do Google (${googleVm.files.length})'
+                          : 'Planilhas do Google',
+                      style: GoogleFonts.inter(
+                        color: AppColors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (googleVm.isSignedIn)
+                    AnimatedRotation(
+                      turns: _expanded ? 0.5 : 0.0,
+                      duration: const Duration(milliseconds: 200),
+                      child: const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppColors.textSecondary,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (!googleVm.isSignedIn)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Text(
+                'Conecte sua conta na seção "Google" para listar suas planilhas aqui.',
+                style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 11.5),
+              ),
+            )
+          else if (_expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: googleVm.files.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(
+                        'Nenhuma planilha encontrada.',
+                        style: GoogleFonts.inter(
+                          color: AppColors.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    )
+                  : ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 240),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: googleVm.files.length,
+                        itemBuilder: (_, i) {
+                          final file = googleVm.files[i];
+                          final loading = _loadingFileId == file.id;
+                          return ListTile(
+                            dense: true,
+                            leading: Icon(
+                              file.isNativeSheet
+                                  ? Icons.grid_on_rounded
+                                  : Icons.description_rounded,
+                              size: 18,
+                              color: file.isNativeSheet
+                                  ? AppColors.success
+                                  : AppColors.info,
+                            ),
+                            title: Text(
+                              file.name,
+                              style: GoogleFonts.inter(
+                                color: AppColors.textPrimary,
+                                fontSize: 12.5,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: loading
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(
+                                    Icons.download_rounded,
+                                    size: 16,
+                                    color: AppColors.textMuted,
+                                  ),
+                            onTap: _loadingFileId != null
+                                ? null
+                                : () => _loadFile(googleVm, file),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+        ],
       ),
     );
   }
@@ -1147,7 +1338,8 @@ class _ContactRow extends StatelessWidget {
             ),
             child: Center(
               child: Text(
-                (server.nome.isNotEmpty ? server.nome[0] : '?').toUpperCase(),
+                (server.nomeCompleto.isNotEmpty ? server.nomeCompleto[0] : '?')
+                    .toUpperCase(),
                 style: GoogleFonts.inter(
                   color: server.isSelected ? AppColors.primaryLight : AppColors.textMuted,
                   fontSize: 13,
@@ -1162,12 +1354,14 @@ class _ContactRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  server.nome,
+                  server.nomeCompleto,
                   style: GoogleFonts.inter(
                     color: server.isSelected ? AppColors.textPrimary : AppColors.textMuted,
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 Text(
                   '${server.ddd} ${server.telefone} • ${server.municipio}',
@@ -1749,6 +1943,119 @@ class _SectionHeader extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ],
+    );
+  }
+}
+
+// ──────────────────────────────────────────
+// COLLAPSIBLE SECTION
+// ──────────────────────────────────────────
+//
+// Wrapper que dobra/desdobra o conteudo. Usado para que cada bloco da
+// aba "Templates & Envio Manual" (Modelos Salvos, Templates e Mensagens,
+// Envio Manual e Pre-visualizacao) possa ser recolhido independentemente.
+class _CollapsibleSection extends StatefulWidget {
+  const _CollapsibleSection({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.child,
+    this.headerTrailing,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget child;
+  final Widget? headerTrailing;
+
+  @override
+  State<_CollapsibleSection> createState() => _CollapsibleSectionState();
+}
+
+class _CollapsibleSectionState extends State<_CollapsibleSection> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceAlt,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    widget.icon,
+                    color: AppColors.primaryLight,
+                    size: 16,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        style: GoogleFonts.inter(
+                          color: AppColors.textPrimary,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        widget.subtitle,
+                        style: GoogleFonts.inter(
+                          color: AppColors.textMuted,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.headerTrailing != null) ...[
+                  widget.headerTrailing!,
+                  const SizedBox(width: 4),
+                ],
+                AnimatedRotation(
+                  turns: _expanded ? 0.5 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedCrossFade(
+          firstChild: Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: widget.child,
+          ),
+          secondChild: const SizedBox(width: double.infinity),
+          crossFadeState:
+              _expanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+          duration: const Duration(milliseconds: 220),
         ),
       ],
     );

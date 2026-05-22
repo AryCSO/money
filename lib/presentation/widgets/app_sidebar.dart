@@ -9,6 +9,7 @@ enum NavSection {
   overview,
   campaigns,
   chat,
+  googleDocs,
   connection,
   settings,
 }
@@ -76,6 +77,14 @@ class AppSidebar extends StatelessWidget {
                     collapsed: collapsed,
                     onTap: onSelect,
                   ),
+                  _NavItem(
+                    icon: Icons.cloud_rounded,
+                    label: 'Google',
+                    section: NavSection.googleDocs,
+                    selected: selected,
+                    collapsed: collapsed,
+                    onTap: onSelect,
+                  ),
                   const _SidebarDivider(),
                   _NavItem(
                     icon: Icons.qr_code_scanner_rounded,
@@ -121,76 +130,77 @@ class _SidebarHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final logoMark = Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [AppColors.primary, AppColors.accent],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Icon(
+        Icons.bolt_rounded,
+        color: Colors.white,
+        size: 18,
+      ),
+    );
+
     return Container(
       height: 60,
-      padding: EdgeInsets.symmetric(horizontal: collapsed ? 14 : 16),
+      padding: EdgeInsets.symmetric(horizontal: collapsed ? 4 : 16),
       decoration: const BoxDecoration(
         border: Border(
           bottom: BorderSide(color: AppColors.sidebarBorder, width: 1),
         ),
       ),
-      child: Row(
-        children: [
-          // Logo mark
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(
-              Icons.bolt_rounded,
-              color: Colors.white,
-              size: 18,
-            ),
-          ),
-          if (!collapsed) ...[
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                'Money',
-                style: GoogleFonts.inter(
-                  color: AppColors.textPrimary,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.3,
+      child: collapsed
+          ? Center(
+              child: Tooltip(
+                message: 'Expandir menu',
+                preferBelow: false,
+                child: InkWell(
+                  onTap: onToggleCollapse,
+                  borderRadius: BorderRadius.circular(8),
+                  child: logoMark,
                 ),
               ),
-            ),
-            InkWell(
-              onTap: onToggleCollapse,
-              borderRadius: BorderRadius.circular(6),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.chevron_left_rounded,
-                  color: AppColors.textMuted,
-                  size: 18,
+            )
+          : Row(
+              children: [
+                logoMark,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Money',
+                    style: GoogleFonts.inter(
+                      color: AppColors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ] else ...[
-            const Spacer(),
-            InkWell(
-              onTap: onToggleCollapse,
-              borderRadius: BorderRadius.circular(6),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.chevron_right_rounded,
-                  color: AppColors.textMuted,
-                  size: 18,
+                Tooltip(
+                  message: 'Recolher menu',
+                  preferBelow: false,
+                  child: InkWell(
+                    onTap: onToggleCollapse,
+                    borderRadius: BorderRadius.circular(6),
+                    child: const Padding(
+                      padding: EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.chevron_left_rounded,
+                        color: AppColors.textMuted,
+                        size: 18,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
-        ],
-      ),
     );
   }
 }

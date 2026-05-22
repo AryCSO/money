@@ -10,10 +10,13 @@ $targetRoot = 'C:\money\firebird5'
 $moneyRoot = 'C:\money'
 $serviceInstance = 'Money'
 $serviceName = "FirebirdServer$serviceInstance"
+$firebirdHost = '127.0.0.1'
 $firebirdPort = 9255
+$sysdbaPassword = 'masterkey'
 $appUser = 'money'
 $appPassword = '101812Ar@'
 $moneyDbPath = 'C:\money\money.fdb'
+$moneyDbConnectionString = "${firebirdHost}/${firebirdPort}:C:/money/money.fdb"
 $tempSqlRoot = 'C:\money\.firebird_setup'
 
 function Require-Administrator {
@@ -84,13 +87,27 @@ function Invoke-IsqlScript {
 
   try {
     $Sql | Set-Content -LiteralPath $scriptPath -Encoding ASCII
-    & (Join-Path $targetRoot 'isql.exe') @Arguments -i $scriptPath
+    & (Join-Path $targetRoot 'isql.exe') -q @Arguments -i $scriptPath
     if ($LASTEXITCODE -ne 0) {
       throw "isql.exe retornou codigo $LASTEXITCODE."
     }
   } finally {
     Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
   }
+}
+
+function Start-MoneyFirebirdService {
+  & (Join-Path $targetRoot 'instsvc.exe') start -n $serviceInstance | Out-Null
+  Start-Sleep -Seconds 2
+}
+
+function Initialize-SysdbaUser {
+  Invoke-IsqlScript `
+    -Sql @"
+CREATE OR ALTER USER SYSDBA PASSWORD '$sysdbaPassword';
+QUIT;
+"@ `
+    -Arguments @('-user', 'SYSDBA', 'security.db')
 }
 
 Require-Administrator
@@ -126,6 +143,10 @@ if ($ForceReinstall -and (Test-Path -LiteralPath $moneyDbPath)) {
   Remove-Item -LiteralPath $moneyDbPath -Force
 }
 
+if ($serviceExists) {
+  Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+}
+
 $targetWasMissing = -not (Test-Path -LiteralPath $targetRoot)
 if ($targetWasMissing) {
   Copy-Item -LiteralPath $sourceRoot -Destination $targetRoot -Recurse
@@ -138,35 +159,27 @@ if (-not (Test-Path -LiteralPath $securityDbSource)) {
 Copy-Item -LiteralPath $securityDbSource -Destination (Join-Path $targetRoot 'security5.fdb') -Force
 
 Write-MoneyFirebirdConfig -Path (Join-Path $targetRoot 'firebird.conf') -Port $firebirdPort
+Initialize-SysdbaUser
 
-if ($serviceExists) {
-  Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-} else {
+if (-not $serviceExists) {
   & (Join-Path $targetRoot 'instreg.exe') install -n $serviceInstance | Out-Null
   & (Join-Path $targetRoot 'instsvc.exe') install -n $serviceInstance | Out-Null
 }
 
-Invoke-IsqlScript `
-  -Sql @"
-CREATE OR ALTER USER SYSDBA PASSWORD 'masterkey';
-QUIT;
-"@ `
-  -Arguments @('-user', 'SYSDBA', 'employee')
+Start-MoneyFirebirdService
 
 if (-not (Test-Path -LiteralPath $moneyDbPath)) {
   Invoke-IsqlScript -Sql @"
-CREATE DATABASE 'C:/money/money.fdb' USER 'SYSDBA' PASSWORD 'masterkey';
+CREATE DATABASE '$moneyDbConnectionString' USER 'SYSDBA' PASSWORD '$sysdbaPassword';
 QUIT;
-"@ -Arguments @('-user', 'SYSDBA')
+"@
 }
 
-& (Join-Path $targetRoot 'instsvc.exe') start -n $serviceInstance | Out-Null
-Start-Sleep -Seconds 2
-
 Invoke-IsqlScript -Sql @"
-CONNECT 'localhost/$firebirdPort:C:/money/money.fdb' USER SYSDBA PASSWORD 'masterkey';
+CONNECT '$moneyDbConnectionString' USER SYSDBA PASSWORD '$sysdbaPassword';
 CREATE OR ALTER USER $appUser PASSWORD '$appPassword';
 GRANT DEFAULT RDB`$ADMIN TO USER $appUser;
+GRANT CREATE DATABASE TO USER $appUser;
 COMMIT;
 QUIT;
 "@

@@ -13,6 +13,10 @@ NGROK_AUTHTOKEN="${2:-COLE_SEU_TOKEN_NGROK_AQUI}"
 INSTALL_DOCKER="${3:-1}"
 INSTALL_EVOLUTION="${4:-1}"
 INSTALL_NGROK="${5:-1}"
+BUILD_APP="${6:-1}"
+
+MONEY_REPO="https://github.com/AryCSO/money.git"
+MONEY_APP_NAME="Money"
 
 EVO_IMAGE="atendai/evolution-api:v2.2.3"
 API_KEY="f0Y69k2b5yQWWtmLUs40UVtFWWBIhuWA"
@@ -244,6 +248,205 @@ start_ngrok_tunnel() {
 }
 
 # ============================================================
+# GIT
+# ============================================================
+ensure_git() {
+  if command -v git &>/dev/null; then
+    ok "Git encontrado."
+    return 0
+  fi
+
+  info "Git nao encontrado. Instalando via Xcode Command Line Tools..."
+  xcode-select --install 2>/dev/null || true
+
+  # Esperar ate o git aparecer (o usuario precisa aceitar o dialog do Xcode)
+  local wait=0
+  while ! command -v git &>/dev/null; do
+    wait=$((wait + 1))
+    if [[ ${wait} -ge 120 ]]; then
+      fail "Git nao foi instalado. Aceite a instalacao do Xcode Command Line Tools e tente novamente."
+    fi
+    sleep 2
+  done
+
+  ok "Git instalado."
+}
+
+# ============================================================
+# FLUTTER SDK
+# ============================================================
+ensure_flutter() {
+  if command -v flutter &>/dev/null; then
+    ok "Flutter encontrado: $(flutter --version 2>/dev/null | head -1)"
+    return 0
+  fi
+
+  # Verificar se ja foi instalado pelo script anteriormente
+  if [[ -f "${MONEY_ROOT}/flutter/bin/flutter" ]]; then
+    export PATH="${MONEY_ROOT}/flutter/bin:${PATH}"
+    ok "Flutter encontrado em ${MONEY_ROOT}/flutter"
+    return 0
+  fi
+
+  info "Flutter nao encontrado. Instalando..."
+  ensure_homebrew
+
+  # Tentar via Homebrew primeiro (mais limpo)
+  if brew install --cask flutter 2>/dev/null; then
+    # Homebrew coloca em /opt/homebrew/Caskroom/flutter ou /usr/local/Caskroom/flutter
+    # e cria symlinks automaticamente
+    if command -v flutter &>/dev/null; then
+      ok "Flutter instalado via Homebrew."
+      return 0
+    fi
+  fi
+
+  # Fallback: clone do repo oficial
+  info "Instalando Flutter via clone direto..."
+  ensure_git
+  git clone https://github.com/flutter/flutter.git -b stable --depth 1 "${MONEY_ROOT}/flutter"
+  export PATH="${MONEY_ROOT}/flutter/bin:${PATH}"
+
+  if ! command -v flutter &>/dev/null; then
+    fail "Flutter nao encontrado no PATH apos instalacao."
+  fi
+
+  ok "Flutter instalado em ${MONEY_ROOT}/flutter"
+}
+
+# ============================================================
+# FIREBIRD (macOS — via Docker)
+# ============================================================
+ensure_firebird_docker() {
+  info "Configurando Firebird 5 via Docker..."
+
+  # Verificar se o container ja existe e esta rodando
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^money_firebird$"; then
+    ok "Container Firebird ja esta rodando."
+    return 0
+  fi
+
+  # Se existe mas parado, iniciar
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^money_firebird$"; then
+    info "Container Firebird existe mas esta parado. Iniciando..."
+    docker start money_firebird
+    ok "Container Firebird iniciado."
+    return 0
+  fi
+
+  # Criar o container
+  info "Criando container Firebird 5..."
+  mkdir -p "${MONEY_ROOT}/firebird/data"
+
+  docker run -d \
+    --name money_firebird \
+    --restart always \
+    -p 9255:3050 \
+    -e FIREBIRD_DATABASE=money.fdb \
+    -e FIREBIRD_USER=money \
+    -e "FIREBIRD_PASSWORD=101812Ar@" \
+    -e ISC_PASSWORD=masterkey \
+    -v "${MONEY_ROOT}/firebird/data:/firebird/data" \
+    jacobalberty/firebird:v5 \
+    || fail "Falha ao criar container Firebird."
+
+  # Esperar o Firebird ficar pronto
+  info "Esperando Firebird inicializar..."
+  local wait=0
+  while ! docker exec money_firebird isql-fb -q -i /dev/null localhost:money.fdb -u money -p '101812Ar@' &>/dev/null; do
+    wait=$((wait + 1))
+    if [[ ${wait} -ge 30 ]]; then
+      warn "Firebird pode nao estar pronto ainda. O app vai tentar conectar na primeira execucao."
+      return 0
+    fi
+    sleep 2
+  done
+
+  ok "Firebird 5 rodando na porta 9255."
+}
+
+# ============================================================
+# BUILD DO APP MONEY (macOS nativo .app)
+# ============================================================
+build_money_app() {
+  ensure_git
+  ensure_flutter
+
+  local source_dir="${MONEY_ROOT}/money-source"
+  local app_bundle="${MONEY_ROOT}/${MONEY_APP_NAME}.app"
+
+  # Clonar ou atualizar o repositorio
+  if [[ -d "${source_dir}/.git" ]]; then
+    info "Atualizando codigo-fonte do Money..."
+    (cd "${source_dir}" && git pull --ff-only 2>/dev/null) || warn "Nao foi possivel atualizar. Usando versao existente."
+  else
+    info "Clonando repositorio do Money..."
+    rm -rf "${source_dir}"
+    git clone "${MONEY_REPO}" "${source_dir}" || fail "Falha ao clonar repositorio."
+  fi
+
+  ok "Codigo-fonte pronto em ${source_dir}"
+
+  # Verificar pre-requisitos do Flutter para macOS
+  info "Verificando ambiente Flutter..."
+  flutter config --enable-macos-desktop 2>/dev/null || true
+  (cd "${source_dir}" && flutter pub get) || fail "Falha ao baixar dependencias Flutter."
+
+  # Copiar fbclient (Firebird) se disponivel
+  # No macOS via Docker, o fbclient nao e necessario localmente —
+  # a conexao ao Firebird e via TCP (container Docker na porta 9255)
+
+  # Build release
+  info "Compilando Money para macOS (isso pode levar alguns minutos)..."
+  (cd "${source_dir}" && flutter build macos --release) || fail "Falha ao compilar o app."
+
+  # O build gera em build/macos/Build/Products/Release/money.app
+  local built_app="${source_dir}/build/macos/Build/Products/Release/money.app"
+  if [[ ! -d "${built_app}" ]]; then
+    # Tentar path alternativo (varia com versao do Flutter)
+    built_app="$(find "${source_dir}/build/macos" -name "*.app" -type d 2>/dev/null | head -1)"
+  fi
+
+  if [[ -z "${built_app}" || ! -d "${built_app}" ]]; then
+    fail "Build concluido mas o .app nao foi encontrado em ${source_dir}/build/macos/"
+  fi
+
+  # Copiar para ~/money/Money.app
+  info "Instalando app..."
+  rm -rf "${app_bundle}"
+  cp -R "${built_app}" "${app_bundle}"
+
+  # Tambem copiar para /Applications se o usuario quiser
+  if [[ -d "/Applications" ]]; then
+    info "Copiando para /Applications/${MONEY_APP_NAME}.app..."
+    rm -rf "/Applications/${MONEY_APP_NAME}.app"
+    cp -R "${built_app}" "/Applications/${MONEY_APP_NAME}.app" 2>/dev/null || warn "Sem permissao para copiar para /Applications. Use sudo se desejar."
+  fi
+
+  ok "App compilado: ${app_bundle}"
+  if [[ -d "/Applications/${MONEY_APP_NAME}.app" ]]; then
+    ok "Tambem instalado em /Applications/${MONEY_APP_NAME}.app"
+  fi
+
+  # Criar script de atalho para abrir
+  cat > "${MONEY_ROOT}/abrir_money.sh" <<'OPENEOF'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -d "/Applications/Money.app" ]]; then
+  open -a "/Applications/Money.app"
+elif [[ -d "${SCRIPT_DIR}/Money.app" ]]; then
+  open "${SCRIPT_DIR}/Money.app"
+else
+  echo "Money.app nao encontrado."
+  exit 1
+fi
+OPENEOF
+  chmod +x "${MONEY_ROOT}/abrir_money.sh"
+
+  ok "Atalho criado: ${MONEY_ROOT}/abrir_money.sh"
+}
+
+# ============================================================
 # EXECUCAO PRINCIPAL
 # ============================================================
 
@@ -352,6 +555,25 @@ else
   info "Instalacao da Evolution API ignorada (opcional)."
 fi
 
+# ---- Firebird (via Docker, necessario para o app) ----
+if [[ "${BUILD_APP}" == "1" || "${INSTALL_EVOLUTION}" == "1" ]]; then
+  # Firebird precisa de Docker
+  if command -v docker &>/dev/null && docker info &>/dev/null; then
+    ensure_firebird_docker
+  else
+    warn "Docker nao esta ativo. Firebird sera configurado quando o Docker estiver pronto."
+  fi
+fi
+
+# ---- Build do app Money ----
+if [[ "${BUILD_APP}" == "1" ]]; then
+  echo
+  info "=========================================="
+  info "  COMPILANDO APLICATIVO MONEY (macOS)"
+  info "=========================================="
+  build_money_app
+fi
+
 # ---- Iniciar ngrok se tudo configurado ----
 if [[ "${INSTALL_NGROK}" == "1" && -n "${NGROK_BIN}" && "${NGROK_AUTHTOKEN}" != "COLE_SEU_TOKEN_NGROK_AQUI" ]]; then
   start_ngrok_tunnel
@@ -359,18 +581,47 @@ fi
 
 # ---- Resultado final ----
 echo
-info "Setup finalizado."
+info "============================================"
+info "  SETUP FINALIZADO"
+info "============================================"
+echo
 if [[ -n "${NGROK_PUBLIC_URL}" ]]; then
   ok "URL publica ngrok: ${NGROK_PUBLIC_URL}"
 else
-  info "Para iniciar o tunnel manualmente: ${MONEY_ROOT}/start_ngrok.sh"
+  if [[ "${INSTALL_NGROK}" == "1" ]]; then
+    info "Para iniciar o tunnel manualmente: ${MONEY_ROOT}/start_ngrok.sh"
+  fi
 fi
 
 echo
-info "Resumo dos caminhos:"
-info "  Raiz:           ${MONEY_ROOT}"
-info "  Evolution API:  ${STACK_ROOT}"
-info "  Dados:          ${DATA_ROOT}"
-info "  ngrok:          ${NGROK_ROOT}"
+info "Resumo:"
+info "  Raiz:             ${MONEY_ROOT}"
+if [[ "${INSTALL_EVOLUTION}" == "1" ]]; then
+  info "  Evolution API:    ${API_URL}"
+  info "  Evolution Manager: ${API_URL}/manager"
+  info "  API Key:          ${API_KEY}"
+fi
+if [[ "${BUILD_APP}" == "1" ]]; then
+  if [[ -d "/Applications/${MONEY_APP_NAME}.app" ]]; then
+    info "  App:              /Applications/${MONEY_APP_NAME}.app"
+  else
+    info "  App:              ${MONEY_ROOT}/${MONEY_APP_NAME}.app"
+  fi
+  info "  Abrir:            ${MONEY_ROOT}/abrir_money.sh"
+  info "  Codigo-fonte:     ${MONEY_ROOT}/money-source"
+fi
+info "  Dados Firebird:   ${MONEY_ROOT}/firebird/data"
+info "  Dados Evolution:  ${DATA_ROOT}"
+if [[ "${INSTALL_NGROK}" == "1" ]]; then
+  info "  ngrok:            ${NGROK_ROOT}"
+fi
+
 echo
-ok "Tudo pronto. Abra o app Money e conecte ao WhatsApp."
+ok "Para abrir o Money:"
+if [[ -d "/Applications/${MONEY_APP_NAME}.app" ]]; then
+  ok "  Clique duas vezes em '${MONEY_APP_NAME}' no Launchpad/Applications"
+  ok "  Ou execute: open -a ${MONEY_APP_NAME}"
+else
+  ok "  Execute: ${MONEY_ROOT}/abrir_money.sh"
+fi
+echo

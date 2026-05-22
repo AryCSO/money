@@ -128,9 +128,7 @@ class AutoReplyService {
           continue;
         }
 
-        final phone = PhoneUtils.normalize(
-          remoteJid.replaceAll(RegExp(r'@.*'), ''),
-        );
+        final phone = _extractConversationPhone(chat, remoteJid);
         if (phone.isEmpty) {
           continue;
         }
@@ -575,9 +573,7 @@ class AutoReplyService {
           continue;
         }
 
-        final phone = PhoneUtils.normalize(
-          remoteJid.replaceAll(RegExp(r'@.*'), ''),
-        );
+        final phone = _extractConversationPhone(chat, remoteJid);
         if (phone.isEmpty) {
           continue;
         }
@@ -606,16 +602,27 @@ class AutoReplyService {
             ? inboundMessage.name
             : _extractPushName(chat);
 
-        await _persistIncomingMessage(
-          phone: phone,
-          sendTarget: _resolveSendTarget(
-            conversationKey: phone,
-            payload: chat,
-            remoteJid: remoteJid,
-          ),
-          name: contactName,
-          message: inboundMessage,
-        );
+        // So persistimos quando a mensagem e nova ou na primeira passada do app
+        // (previousTimestamp == null). Sem este guarda, o polling a cada 15s
+        // re-inseria a mesma "latest inbound" sempre que a deduplicacao falhava
+        // (mensagem sem MENSAGEM_ID ou timestamp ligeiramente diferente),
+        // ressuscitando o selo de "nao lidas" no chat ja lido.
+        final isNewerThanKnown =
+            previousTimestamp == null ||
+            inboundMessage.timestamp.isAfter(previousTimestamp);
+
+        if (isNewerThanKnown) {
+          await _persistIncomingMessage(
+            phone: phone,
+            sendTarget: _resolveSendTarget(
+              conversationKey: phone,
+              payload: chat,
+              remoteJid: remoteJid,
+            ),
+            name: contactName,
+            message: inboundMessage,
+          );
+        }
 
         final shouldQueueAutoReply = previousTimestamp == null
             ? _shouldProcessFirstSeenMessage(inboundMessage.timestamp)
@@ -890,12 +897,25 @@ class AutoReplyService {
       return payload;
     }
 
-    final mediaUrl = payload.mediaUrl.trim();
-    if (mediaUrl.isEmpty) {
-      return payload;
+    Uint8List? bytes;
+
+    // WhatsApp serve midias por URLs criptografadas: GET direto retorna nada
+    // util. A Evolution decifra server-side em getBase64FromMediaMessage,
+    // entao TENTAMOS PRIMEIRO essa rota usando o messageId.
+    final messageId = payload.messageId.trim();
+    if (messageId.isNotEmpty) {
+      bytes = await _apiService.fetchMediaBase64(messageId: messageId);
     }
 
-    final bytes = await _apiService.downloadBinary(mediaUrl);
+    // Fallback: midias que ja vem com URL publica (raro, mas existe) ainda
+    // podem ser baixadas por GET. Mantemos como ultimo recurso.
+    if (bytes == null || bytes.isEmpty) {
+      final mediaUrl = payload.mediaUrl.trim();
+      if (mediaUrl.isNotEmpty) {
+        bytes = await _apiService.downloadBinary(mediaUrl);
+      }
+    }
+
     if (bytes == null || bytes.isEmpty) {
       return payload;
     }
@@ -904,6 +924,42 @@ class AutoReplyService {
       fileBytes: bytes,
       fileSize: payload.fileSize > 0 ? payload.fileSize : bytes.length,
     );
+  }
+
+  /// Busca os bytes decifrados de uma midia pelo `messageId` da conversa e
+  /// atualiza a linha em CONVERSAS com `ARQUIVO_DADOS` populado.
+  ///
+  /// Usado pela UI para "carregar manualmente" uma midia cuja primeira sync
+  /// nao conseguiu baixar (versao da Evolution sem o endpoint na epoca,
+  /// queda de rede, etc.). Retorna o payload atualizado (com `fileBytes`)
+  /// ou o original se nao foi possivel obter os bytes.
+  Future<ChatMessagePayload> ensureMediaBytes({
+    required String telefone,
+    required ChatMessagePayload payload,
+  }) async {
+    if (!payload.isMedia || payload.hasFileBytes) {
+      return payload;
+    }
+
+    final prepared = await _prepareIncomingPayloadForStorage(payload);
+    if (!prepared.hasFileBytes) {
+      return payload;
+    }
+
+    try {
+      await DatabaseService.instance.updateConversaMediaBytes(
+        telefone: telefone,
+        mensagemId: prepared.messageId,
+        fileBytes: prepared.fileBytes!,
+        fileSize: prepared.fileSize,
+      );
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('AutoReplyService: erro ao salvar bytes de midia: $e');
+      }
+    }
+
+    return prepared;
   }
 
   ChatMessagePayload? _extractChatMessagePayload(Map<String, dynamic> payload) {
@@ -1471,24 +1527,49 @@ class AutoReplyService {
     required Map<String, dynamic> payload,
     required String remoteJid,
   }) {
-    final remoteJidPhone = _extractRemoteJidPhoneFromPayload(payload);
-    if (remoteJidPhone.isNotEmpty) {
-      return remoteJidPhone;
+    final phone = _extractConversationPhone(payload, remoteJid);
+    if (phone.isNotEmpty) {
+      return phone;
+    }
+    return conversationKey;
+  }
+
+  /// Resolve o telefone REAL de uma conversa, nunca devolvendo um LID (@lid).
+  ///
+  /// O WhatsApp passou a usar identificadores opacos (@lid) como remoteJid em
+  /// algumas conversas; os digitos de um LID NAO sao um telefone. Tratar o LID
+  /// como numero fazia o envio ir para um destinatario errado (quando o LID
+  /// tinha tamanho de telefone) ou falhar com "destinatario nao encontrado".
+  String _extractConversationPhone(
+    Map<String, dynamic> payload,
+    String remoteJid,
+  ) {
+    // 1. remoteJid ja e um telefone real (@s.whatsapp.net / @c.us).
+    final direct = _extractPhoneFromWhatsAppJid(remoteJid);
+    if (direct.isNotEmpty) {
+      return direct;
     }
 
+    // 2. Campos que carregam o telefone real (senderPn, remoteJidAlt,
+    //    participant...). _normalizeManualTarget descarta qualquer @lid.
     for (final candidate in _extractSendTargetCandidates(payload)) {
-      final normalizedCandidate = _normalizeManualTarget(candidate);
-      if (normalizedCandidate.isNotEmpty) {
-        return normalizedCandidate;
+      final normalized = _normalizeManualTarget(candidate);
+      if (normalized.isNotEmpty) {
+        return normalized;
       }
     }
 
-    final remoteJidCandidate = _normalizeManualTarget(remoteJid);
-    if (remoteJidCandidate.isNotEmpty) {
-      return remoteJidCandidate;
+    // 3. remoteJid numerico que NAO seja LID: usa os proprios digitos.
+    if (!remoteJid.toLowerCase().contains('@lid')) {
+      final normalized = PhoneUtils.normalize(
+        remoteJid.replaceAll(RegExp(r'@.*'), ''),
+      );
+      if (_looksLikePhoneFallback(normalized)) {
+        return normalized;
+      }
     }
 
-    return conversationKey;
+    return '';
   }
 
   Future<List<String>> _buildManualSendTargets({
@@ -1505,95 +1586,31 @@ class AutoReplyService {
       }
     }
 
-    final clientPhoneCandidates = await DatabaseService.instance
-        .findClientPhoneCandidatesByName(contactName);
-    for (final candidate in clientPhoneCandidates) {
-      addTarget(candidate);
-    }
-
-    addTarget(await _discoverRemoteJidPhoneTarget(conversationKey));
+    // 1. Telefone REAL e autoritativo, descoberto na lista de chats ao vivo.
+    //    Resolve conversas identificadas por @lid e corrige dados antigos que
+    //    porventura tenham sido salvos com a chave errada.
+    addTarget(await _discoverRealPhoneForConversation(conversationKey));
+    // 2. Destino preferido salvo no banco (DESTINO_ENVIO da conversa).
     addTarget(preferredTarget);
-    for (final discovered in await _discoverConversationTargets(
-      conversationKey,
-    )) {
-      addTarget(discovered);
-    }
+    // 3. O proprio identificador da conversa, quando ja for um telefone valido.
     addTarget(conversationKey);
+
+    // Intencionalmente NAO usamos casamento por nome (findClientPhoneCandidatesByName)
+    // como fallback: a normalizacao reduz ao primeiro nome e pode bater com
+    // QUALQUER cliente homonimo, enviando para um numero aleatorio. Se os
+    // passos 1-3 falharem, melhor erro visivel do que envio para a pessoa errada.
 
     return orderedTargets.toList(growable: false);
   }
 
-  Future<List<String>> _discoverConversationTargets(
+  /// Descobre o telefone REAL de uma conversa consultando a lista de chats ao
+  /// vivo da Evolution API. Casa o chat tanto pela chave normalizada do
+  /// remoteJid/candidatos quanto pelo telefone real ja resolvido, e nunca
+  /// devolve um LID. Resolve conversas @lid e corrige envios para conversas
+  /// cuja chave foi salva incorretamente no passado.
+  Future<String?> _discoverRealPhoneForConversation(
     String conversationKey,
   ) async {
-    try {
-      final chats = await _apiService.findChats();
-      if (chats.isEmpty) {
-        return const [];
-      }
-
-      final matches = <String>{};
-      for (final chat in chats) {
-        final remoteJid = _extractRemoteJid(chat);
-        if (remoteJid.isEmpty || remoteJid.contains('@g.us')) {
-          continue;
-        }
-
-        final identifiers = <String>{_normalizeConversationKey(remoteJid)};
-        for (final candidate in _extractSendTargetCandidates(chat)) {
-          final normalized = _normalizeConversationKey(candidate);
-          if (normalized.isNotEmpty) {
-            identifiers.add(normalized);
-          }
-        }
-
-        if (!identifiers.contains(conversationKey)) {
-          continue;
-        }
-
-        for (final candidate in _extractSendTargetCandidates(chat)) {
-          final normalizedCandidate = _normalizeManualTarget(candidate);
-          if (normalizedCandidate.isNotEmpty) {
-            matches.add(normalizedCandidate);
-          }
-        }
-
-        final defaultTarget = _resolveSendTarget(
-          conversationKey: conversationKey,
-          payload: chat,
-          remoteJid: remoteJid,
-        );
-        if (defaultTarget.isNotEmpty) {
-          matches.add(defaultTarget);
-        }
-
-        final messages = await _apiService.findMessages(
-          remoteJid: remoteJid,
-          limit: 12,
-        );
-        for (final message in messages) {
-          for (final candidate in _extractSendTargetCandidates(message)) {
-            final normalizedCandidate = _normalizeManualTarget(candidate);
-            if (normalizedCandidate.isNotEmpty) {
-              matches.add(normalizedCandidate);
-            }
-          }
-        }
-      }
-
-      return matches.toList(growable: false);
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint(
-          'AutoReplyService: nao foi possivel descobrir destino do chat '
-          '$conversationKey: $e',
-        );
-      }
-      return const [];
-    }
-  }
-
-  Future<String?> _discoverRemoteJidPhoneTarget(String conversationKey) async {
     try {
       final chats = await _apiService.findChats();
       if (chats.isEmpty) {
@@ -1606,6 +1623,8 @@ class AutoReplyService {
           continue;
         }
 
+        final chatPhone = _extractConversationPhone(chat, remoteJid);
+
         final identifiers = <String>{_normalizeConversationKey(remoteJid)};
         for (final candidate in _extractSendTargetCandidates(chat)) {
           final normalized = _normalizeConversationKey(candidate);
@@ -1613,14 +1632,16 @@ class AutoReplyService {
             identifiers.add(normalized);
           }
         }
+        if (chatPhone.isNotEmpty) {
+          identifiers.add(chatPhone);
+        }
 
         if (!identifiers.contains(conversationKey)) {
           continue;
         }
 
-        final remoteJidPhone = _extractRemoteJidPhoneFromPayload(chat);
-        if (remoteJidPhone.isNotEmpty) {
-          return remoteJidPhone;
+        if (chatPhone.isNotEmpty) {
+          return chatPhone;
         }
 
         final messages = await _apiService.findMessages(
@@ -1628,19 +1649,20 @@ class AutoReplyService {
           limit: 12,
         );
         for (final message in messages) {
-          final messageRemoteJidPhone = _extractRemoteJidPhoneFromPayload(
+          final messagePhone = _extractConversationPhone(
             message,
+            _extractRemoteJid(message),
           );
-          if (messageRemoteJidPhone.isNotEmpty) {
-            return messageRemoteJidPhone;
+          if (messagePhone.isNotEmpty) {
+            return messagePhone;
           }
         }
       }
     } catch (e) {
       if (kDebugMode) {
         debugPrint(
-          'AutoReplyService: nao foi possivel localizar remoteJid para o chat '
-          '$conversationKey: $e',
+          'AutoReplyService: nao foi possivel localizar telefone real para o '
+          'chat $conversationKey: $e',
         );
       }
     }
@@ -1747,30 +1769,6 @@ class AutoReplyService {
     }
 
     return PhoneUtils.normalize(value.replaceAll(RegExp(r'@.*'), ''));
-  }
-
-  String _extractRemoteJidPhoneFromPayload(Map<String, dynamic> payload) {
-    final remoteJidCandidates = <String>[
-      payload['remoteJid']?.toString() ?? '',
-      _getNested(payload, const ['key', 'remoteJid'])?.toString() ?? '',
-      _getNested(payload, const ['message', 'key', 'remoteJid'])?.toString() ??
-          '',
-      _getNested(payload, const [
-            'lastMessage',
-            'key',
-            'remoteJid',
-          ])?.toString() ??
-          '',
-    ];
-
-    for (final candidate in remoteJidCandidates) {
-      final phone = _extractPhoneFromWhatsAppJid(candidate);
-      if (phone.isNotEmpty) {
-        return phone;
-      }
-    }
-
-    return '';
   }
 
   String _extractPhoneFromWhatsAppJid(String value) {

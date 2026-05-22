@@ -3,7 +3,16 @@
     "allow": [
       "Bash(flutter analyze:*)",
       "Bash(flutter build:*)",
-      "Bash(chmod +x setup_money_env_macos.sh)"
+      "Bash(chmod +x setup_money_env_macos.sh)",
+      "Bash(dart analyze:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(flutter test *)",
+      "PowerShell($f = \\(Get-Command flutter -ErrorAction SilentlyContinue\\); if \\($f\\) { \"flutter: $\\($f.Source\\)\" } else { \"flutter NOT on PATH\" }; $d = \\(Get-Command dart -ErrorAction SilentlyContinue\\); if \\($d\\) { \"dart: $\\($d.Source\\)\" } else { \"dart NOT on PATH\" })",
+      "PowerShell(flutter pub get)",
+      "PowerShell(flutter analyze lib/presentation/views/chat_page.dart lib/data/datasources/database_service_io.dart lib/data/datasources/auto_reply_service.dart lib/data/datasources/database_service_web.dart)",
+      "PowerShell(flutter analyze 2>&1)",
+      "PowerShell(flutter analyze lib/data/datasources/auto_reply_service.dart)"
     ]
   }
 }

@@ -4,12 +4,14 @@ import 'package:provider/provider.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/theme_controller.dart';
+import '../viewmodels/auth_viewmodel.dart';
 import '../viewmodels/connection_viewmodel.dart';
 import '../widgets/app_sidebar.dart';
 import 'campaigns_page.dart';
 import 'chat_page.dart';
 import 'connection_page.dart';
 import 'developer_options_page.dart';
+import 'google_docs_page.dart';
 import 'overview_page.dart';
 
 class MainLayout extends StatefulWidget {
@@ -27,6 +29,7 @@ class _MainLayoutState extends State<MainLayout> {
     NavSection.overview: 'Visão Geral',
     NavSection.campaigns: 'Campanhas',
     NavSection.chat: 'Chat',
+    NavSection.googleDocs: 'Google',
     NavSection.connection: 'Conexão WhatsApp',
     NavSection.settings: 'Configurações',
   };
@@ -35,8 +38,9 @@ class _MainLayoutState extends State<MainLayout> {
     NavSection.overview: 'Monitore o desempenho das suas campanhas',
     NavSection.campaigns: 'Crie e dispare mensagens em massa',
     NavSection.chat: 'Histórico de conversas e auto-resposta',
+    NavSection.googleDocs: 'Login e planilhas do Google Drive',
     NavSection.connection: 'Gerencie sua instância WhatsApp',
-    NavSection.settings: 'Opções avançadas do desenvolvedor',
+    NavSection.settings: 'Comportamento da janela e conexão da API',
   };
 
   Widget _buildPage() {
@@ -44,6 +48,7 @@ class _MainLayoutState extends State<MainLayout> {
       NavSection.overview => const OverviewPage(),
       NavSection.campaigns => const CampaignsPage(),
       NavSection.chat => const ChatPage(),
+      NavSection.googleDocs => const GoogleDocsPage(),
       NavSection.connection => const ConnectionPage(),
       NavSection.settings => const DeveloperOptionsPage(),
     };
@@ -174,31 +179,94 @@ class _TopBar extends StatelessWidget {
             ),
           ),
 
-          // User avatar
+          // User avatar + menu
           const SizedBox(width: 4),
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [AppColors.primary, AppColors.accent],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-              child: Text(
-                'M',
+          const _UserMenu(),
+        ],
+      ),
+    );
+  }
+}
+
+class _UserMenu extends StatelessWidget {
+  const _UserMenu();
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = context.watch<AuthViewModel>();
+    final name = auth.user?.displayName ?? 'Usuário';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'U';
+
+    return PopupMenuButton<String>(
+      tooltip: name,
+      offset: const Offset(0, 40),
+      color: AppColors.surfaceAlt,
+      onSelected: (value) {
+        if (value == 'logout') {
+          context.read<AuthViewModel>().logout();
+        }
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                name,
                 style: GoogleFonts.inter(
-                  color: Colors.white,
+                  color: AppColors.textPrimary,
                   fontSize: 13,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
+              if (auth.user?.email.isNotEmpty == true)
+                Text(
+                  auth.user!.email,
+                  style: GoogleFonts.inter(
+                    color: AppColors.textMuted,
+                    fontSize: 11,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'logout',
+          child: Row(
+            children: [
+              const Icon(Icons.logout_rounded, size: 16, color: AppColors.error),
+              const SizedBox(width: 8),
+              Text(
+                'Sair',
+                style: GoogleFonts.inter(color: AppColors.textPrimary, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [AppColors.primary, AppColors.accent],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Text(
+            initial,
+            style: GoogleFonts.inter(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
             ),
           ),
-        ],
+        ),
       ),
     );
   }

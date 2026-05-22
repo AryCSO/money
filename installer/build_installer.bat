@@ -21,11 +21,7 @@ if not exist "%APP_BUILD_DIR%\money.exe" (
   exit /b 1
 )
 
-if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
-  set "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-) else if exist "C:\Program Files\Inno Setup 6\ISCC.exe" (
-  set "ISCC_EXE=C:\Program Files\Inno Setup 6\ISCC.exe"
-)
+call :find_iscc
 
 if not defined ISCC_EXE (
   echo [INFO] Inno Setup nao encontrado. Tentando instalar via winget...
@@ -41,11 +37,7 @@ if not defined ISCC_EXE (
     exit /b 1
   )
 
-  if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
-    set "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-  ) else if exist "C:\Program Files\Inno Setup 6\ISCC.exe" (
-    set "ISCC_EXE=C:\Program Files\Inno Setup 6\ISCC.exe"
-  )
+  call :find_iscc
 )
 
 if not defined ISCC_EXE (
@@ -61,4 +53,14 @@ if errorlevel 1 (
 )
 
 echo [OK] Instalador gerado em: %ROOT_DIR%\dist
+exit /b 0
+
+:find_iscc
+if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" (
+  set "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+) else if exist "C:\Program Files\Inno Setup 6\ISCC.exe" (
+  set "ISCC_EXE=C:\Program Files\Inno Setup 6\ISCC.exe"
+) else if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" (
+  set "ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+)
 exit /b 0

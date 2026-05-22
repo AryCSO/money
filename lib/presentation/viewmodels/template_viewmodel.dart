@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/config/anti_ban_controller.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/phone_utils.dart';
 import '../../core/utils/template_engine.dart';
@@ -32,8 +33,19 @@ class TemplateViewModel extends ChangeNotifier {
   /// Referência ao auto-reply para coordenar envio em massa
   AutoReplyViewModel? autoReplyViewModel;
 
+  /// Controller anti-ban (janela horária, pausa-café, teto diário).
+  /// Injetado pelo ProxyProvider. Pode ser null se Provider ainda não montou.
+  AntiBanController? antiBan;
+
   /// Referência ao banco de dados
   final DatabaseService _db = DatabaseService.instance;
+
+  /// Contador da pausa-café desde o último descanso.
+  int _consecutiveSends = 0;
+  bool _isOnCoffeeBreak = false;
+  bool get isOnCoffeeBreak => _isOnCoffeeBreak;
+  String? _coffeeBreakMessage;
+  String? get coffeeBreakMessage => _coffeeBreakMessage;
 
   /// Debounce timer para preview
   Timer? _previewDebounce;
@@ -174,8 +186,6 @@ class TemplateViewModel extends ChangeNotifier {
         return;
       }
 
-      spreadsheetFileName = file.name;
-
       // Offload parsing para Isolate para não travar a UI
       spreadsheetLoadingMessage = 'Lendo planilha...';
       notifyListeners();
@@ -184,38 +194,65 @@ class TemplateViewModel extends ChangeNotifier {
         bytes,
       );
 
-      // Extrair cidades unicas dos servidores carregados
-      final cidades = <String>{};
-      for (final s in _allServers) {
-        if (s.municipio.isNotEmpty) cidades.add(s.municipio);
-      }
-      availableCidades = cidades.toList()..sort();
-
-      // Reset filtros
-      idadeMin = null;
-      idadeMax = null;
-      cidadeSelecionada = null;
-      genderFilter = 'todos';
-
-      // Verificar quais números já foram enviados nos últimos 30 dias
-      spreadsheetLoadingMessage = 'Verificando histórico de envios...';
-      notifyListeners();
-      await _markAlreadySentServers();
-
-      _applyFilters();
-
-      final alreadySentCount = _allServers.where((s) => s.alreadySent).length;
-      final newCount = _allServers.length - alreadySentCount;
-      feedbackMessage = alreadySentCount > 0
-          ? 'Planilha "${file.name}" carregada: $newCount novo(s), $alreadySentCount já enviado(s) desmarcado(s).'
-          : 'Planilha "${file.name}" carregada: ${_allServers.length} servidor(es).';
-      isLoadingSpreadsheet = false;
-      notifyListeners();
+      await _finalizeLoadedSpreadsheet(file.name);
     } catch (e) {
       feedbackMessage = 'Erro ao ler planilha: $e';
       isLoadingSpreadsheet = false;
       notifyListeners();
     }
+  }
+
+  /// Carrega servidores a partir de linhas já lidas (ex.: planilha do Google
+  /// Drive). Reaproveita o mesmo parser e pós-processamento do upload local.
+  Future<void> loadFromRows(
+    List<List<dynamic>> rows,
+    String fileName,
+  ) async {
+    try {
+      isLoadingSpreadsheet = true;
+      spreadsheetLoadingMessage = 'Lendo planilha do Google...';
+      notifyListeners();
+
+      _allServers = await compute(_parseRowsInIsolate, rows);
+      await _finalizeLoadedSpreadsheet(fileName);
+    } catch (e) {
+      feedbackMessage = 'Erro ao carregar planilha do Google: $e';
+      isLoadingSpreadsheet = false;
+      notifyListeners();
+    }
+  }
+
+  /// Pós-processamento comum após carregar `_allServers`: cidades, reset de
+  /// filtros, marcação de já-enviados e aplicação dos filtros.
+  Future<void> _finalizeLoadedSpreadsheet(String fileName) async {
+    spreadsheetFileName = fileName;
+
+    final cidades = <String>{};
+    for (final s in _allServers) {
+      if (s.municipio.isNotEmpty) cidades.add(s.municipio);
+    }
+    availableCidades = cidades.toList()..sort();
+
+    // Reset filtros
+    idadeMin = null;
+    idadeMax = null;
+    cidadeSelecionada = null;
+    genderFilter = 'todos';
+
+    // Verificar quais números já foram enviados nos últimos 30 dias
+    spreadsheetLoadingMessage = 'Verificando histórico de envios...';
+    notifyListeners();
+    await _markAlreadySentServers();
+
+    _applyFilters();
+
+    final alreadySentCount = _allServers.where((s) => s.alreadySent).length;
+    final newCount = _allServers.length - alreadySentCount;
+    feedbackMessage = alreadySentCount > 0
+        ? 'Planilha "$fileName" carregada: $newCount novo(s), $alreadySentCount já enviado(s) desmarcado(s).'
+        : 'Planilha "$fileName" carregada: ${_allServers.length} servidor(es).';
+    isLoadingSpreadsheet = false;
+    notifyListeners();
   }
 
   /// Verifica quais servidores já foram enviados e os desmarca.
@@ -258,10 +295,10 @@ class TemplateViewModel extends ChangeNotifier {
         return false;
       }
 
-      // Filtro de gênero
-      if (genderFilter == 'M' && server.genero != 'Masculino') return false;
-      if (genderFilter == 'F' && server.genero != 'Feminino') return false;
-
+      // Observação de produto: o gênero NÃO oculta contatos. Ele é tratado
+      // como uma ferramenta de SELEÇÃO em setGenderFilter — todos os nomes
+      // continuam visíveis, apenas a marcação muda. Isso permite corrigir
+      // manualmente casos de homem marcado como feminino (ou vice-versa).
       return true;
     }).toList();
 
@@ -309,9 +346,24 @@ class TemplateViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Seleciona contatos por gênero SEM ocultar os demais.
+  ///
+  /// Regra de produto: ao escolher "Homens"/"Mulheres", todos os nomes
+  /// continuam visíveis na lista, mas apenas os do gênero escolhido ficam
+  /// marcados. "todos" marca todos os contatos visíveis. Como a inferência de
+  /// gênero é aproximada, o usuário pode ajustar manualmente cada checkbox.
   void setGenderFilter(String value) {
     genderFilter = value;
-    _applyFilters();
+    for (final server in _filteredServers) {
+      if (value == 'todos') {
+        server.isSelected = true;
+      } else if (value == 'M') {
+        server.isSelected = server.genero == 'Masculino';
+      } else if (value == 'F') {
+        server.isSelected = server.genero == 'Feminino';
+      }
+    }
+    _populatePreviewData();
     notifyListeners();
   }
 
@@ -389,10 +441,20 @@ class TemplateViewModel extends ChangeNotifier {
   void loadSavedModel(Map<String, dynamic> model) {
     for (int i = 0; i < 6; i++) {
       final key = 'msg${i + 1}';
-      templateControllers[i].text = (model[key]?.toString() ?? '').trim();
+      templateControllers[i].text = _sanitizeStoredMessage(model[key]);
     }
     feedbackMessage = 'Modelo "${model['nome'] ?? ''}" carregado.';
     updatePreview();
+  }
+
+  /// Saneia o valor lido do banco para um campo de mensagem.
+  /// Trata BLOBs vazios que historicamente foram serializados como "[]".
+  String _sanitizeStoredMessage(dynamic value) {
+    if (value == null) return '';
+    if (value is List) return value.isEmpty ? '' : value.join();
+    final text = value.toString().trim();
+    if (text == '[]' || text == 'null') return '';
+    return text;
   }
 
   /// Exclui um modelo do banco de dados.
@@ -537,8 +599,52 @@ class TemplateViewModel extends ChangeNotifier {
     autoReplyViewModel?.setBulkSendingActive(true);
 
     var cancelledByUser = false;
+    _consecutiveSends = 0;
 
     for (int i = 0; i < serversToSend.length; i++) {
+      // ── ANTI-BAN: Teto diário (warm-up) ──
+      if (antiBan?.reachedDailyCap == true) {
+        feedbackMessage =
+            'Teto diário atingido (${antiBan!.dailyCap} envios). '
+            'Mude o modo warm-up nas configurações ou aguarde até amanhã.';
+        cancelledByUser = true;
+        break;
+      }
+
+      // ── ANTI-BAN: Janela horária ──
+      if (antiBan != null && !antiBan!.isWithinWorkingHours()) {
+        feedbackMessage =
+            'Fora da janela horária permitida '
+            '(${antiBan!.workingHourStart}h–${antiBan!.workingHourEnd}h). '
+            'Envio pausado.';
+        cancelledByUser = true;
+        break;
+      }
+
+      // ── ANTI-BAN: Pausa-café a cada N envios ──
+      if (antiBan?.coffeeBreakEnabled == true &&
+          _consecutiveSends > 0 &&
+          _consecutiveSends % AppConstants.coffeeBreakEveryMessages == 0) {
+        final breakMinutes = AppConstants.coffeeBreakMinMinutes +
+            Random().nextInt(AppConstants.coffeeBreakMaxMinutes -
+                    AppConstants.coffeeBreakMinMinutes +
+                    1);
+        _isOnCoffeeBreak = true;
+        _coffeeBreakMessage =
+            'Pausa-café anti-ban: $breakMinutes min após ${AppConstants.coffeeBreakEveryMessages} envios.';
+        feedbackMessage = _coffeeBreakMessage;
+        notifyListeners();
+
+        final cancelled = await _cancellableDelay(Duration(minutes: breakMinutes));
+
+        _isOnCoffeeBreak = false;
+        _coffeeBreakMessage = null;
+        if (cancelled) {
+          cancelledByUser = true;
+          break;
+        }
+      }
+
       final server = serversToSend[i];
 
       // Montar telefone: DDI + DDD da planilha + Telefone 2 da planilha
@@ -549,7 +655,9 @@ class TemplateViewModel extends ChangeNotifier {
       int? clienteId;
       try {
         clienteId = await _db.upsertCliente(
-          nome: server.nome,
+          // Persistimos o nome completo como metadado de gestao. O envio
+          // (token {NOME}) continua usando apenas o primeiro nome.
+          nome: server.nomeCompleto,
           cargo: server.cargo,
           telefone: server.telefone,
           ddd: server.ddd,
@@ -575,7 +683,7 @@ class TemplateViewModel extends ChangeNotifier {
           await _db.registrarEnvio(
             clienteId: clienteId,
             telefoneCompleto: '$serverDdd$serverPhone',
-            nomeCliente: server.nome,
+            nomeCliente: server.nomeCompleto,
             sucesso: false,
             mensagemStatus: 'Telefone invalido',
           );
@@ -630,8 +738,12 @@ class TemplateViewModel extends ChangeNotifier {
         sendResults = [...sendResults, ...results];
 
         // Desmarcar o cliente automaticamente se pelo menos uma mensagem foi enviada com sucesso
-        if (results.any((r) => r.success)) {
+        final hadSuccess = results.any((r) => r.success);
+        if (hadSuccess) {
           server.isSelected = false;
+          // ── ANTI-BAN: incrementar contadores ──
+          _consecutiveSends++;
+          await antiBan?.incrementSentToday();
         }
 
         // ── Registrar no banco de dados ──
@@ -640,7 +752,7 @@ class TemplateViewModel extends ChangeNotifier {
             await _db.registrarEnvio(
               clienteId: clienteId,
               telefoneCompleto: fullNumber,
-              nomeCliente: server.nome,
+              nomeCliente: server.nomeCompleto,
               sucesso: r.success,
               mensagemStatus: r.message,
               mensagemEnviada: r.success ? renderedMsgs.join('\n---\n') : '',
@@ -661,7 +773,7 @@ class TemplateViewModel extends ChangeNotifier {
           await _db.registrarEnvio(
             clienteId: clienteId,
             telefoneCompleto: fullNumber,
-            nomeCliente: server.nome,
+            nomeCliente: server.nomeCompleto,
             sucesso: false,
             mensagemStatus: 'Erro: $e',
           );
@@ -833,4 +945,9 @@ const predefinedTemplatesList = [
 /// Top-level function para parsing de planilha em Isolate.
 List<ServerData> _parseExcelInIsolate(Uint8List bytes) {
   return SpreadsheetService().parseExcel(bytes);
+}
+
+/// Top-level function para parsing de linhas já lidas (Google Sheets) em Isolate.
+List<ServerData> _parseRowsInIsolate(List<List<dynamic>> rows) {
+  return SpreadsheetService().parseRows(rows);
 }

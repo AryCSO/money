@@ -2,15 +2,22 @@
 #define APP_BUILD_DIR "..\build\windows\x64\runner\Debug"
 #endif
 
+#ifndef FB_SOURCE_DIR
+#define FB_SOURCE_DIR "C:\money\firebird5_x64_source"
+#endif
+
 [Setup]
 AppId={{F8E9C27D-07B2-4F20-AC26-DA4B15996FD8}
 AppName=Money
 AppVersion=1.0.0
 AppPublisher=Money
 DefaultDirName=C:\money
+; A pasta e travada porque tanto o app Dart quanto o script de
+; configuracao do Firebird esperam o caminho "C:\money".
+DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=Money_Installer
+OutputBaseFilename=setup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -26,14 +33,16 @@ Name: "completo"; Description: "Instalacao completa (Money + Docker + Evolution 
 Name: "personalizado"; Description: "Escolher o que instalar"; Flags: iscustom
 
 [Components]
-Name: "money"; Description: "Aplicativo Money"; Types: completo personalizado
+Name: "money"; Description: "Aplicativo Money + Firebird 5 (obrigatorio)"; Types: completo personalizado; Flags: fixed
 Name: "docker"; Description: "Docker Engine + Docker Compose"; Types: completo personalizado
 Name: "evolution"; Description: "Evolution API (requer Docker ativo)"; Types: completo personalizado
 Name: "ngrok"; Description: "ngrok + tunnel automatico"; Types: completo personalizado
 
 [Files]
 Source: "{#APP_BUILD_DIR}\*"; DestDir: "{app}\app"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: money
-Source: "..\setup_money_env.bat"; DestDir: "{app}"; Flags: ignoreversion; Components: docker,evolution,ngrok
+Source: "{#FB_SOURCE_DIR}\*"; DestDir: "{app}\firebird5_x64_source"; Flags: recursesubdirs createallsubdirs ignoreversion; Components: money
+Source: "..\scripts\setup_firebird_money.ps1"; DestDir: "{app}"; Flags: ignoreversion; Components: money
+Source: "..\setup_money_env.bat"; DestDir: "{app}"; Flags: ignoreversion; Components: docker evolution ngrok
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -45,6 +54,7 @@ Name: "{autodesktop}\Money"; Filename: "{app}\app\money.exe"; Tasks: desktopicon
 Name: "desktopicon"; Description: "Criar atalho na Area de Trabalho"; GroupDescription: "Atalhos:"; Components: money
 
 [Run]
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\setup_firebird_money.ps1"" -SourceRoot ""{app}\firebird5_x64_source"""; StatusMsg: "Instalando e configurando Firebird 5..."; Flags: waituntilterminated; Components: money
 Filename: "{app}\setup_money_env.bat"; Parameters: """{app}"" ""{code:GetNgrokToken}"" ""{code:GetInstallDocker}"" ""{code:GetInstallEvolution}"" ""{code:GetInstallNgrok}"""; Description: "Configurar ambiente selecionado (Docker/Evolution/ngrok)"; Flags: postinstall waituntilterminated; Check: ShouldRunInfraSetup
 Filename: "{app}\app\money.exe"; Description: "Abrir o Money agora"; Flags: nowait postinstall skipifsilent; Check: WizardIsComponentSelected('money')
 

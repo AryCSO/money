@@ -5,9 +5,12 @@ import 'package:provider/provider.dart';
 import '../../core/theme/app_colors.dart';
 import '../viewmodels/auto_reply_viewmodel.dart';
 import '../viewmodels/connection_viewmodel.dart';
+import '../viewmodels/overview_viewmodel.dart';
 import '../viewmodels/template_viewmodel.dart';
 import '../widgets/activity_chart.dart';
+import '../widgets/anti_ban_health_card.dart';
 import '../widgets/metric_card.dart';
+import '../widgets/pending_clients_card.dart';
 
 class OverviewPage extends StatelessWidget {
   const OverviewPage({super.key});
@@ -22,6 +25,10 @@ class OverviewPage extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: const [
             _MetricsRow(),
+            SizedBox(height: 24),
+            PendingClientsCard(),
+            SizedBox(height: 24),
+            AntiBanHealthCard(),
             SizedBox(height: 24),
             _ChartsRow(),
             SizedBox(height: 24),
@@ -41,28 +48,35 @@ class _MetricsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final overviewVm = context.watch<OverviewViewModel>();
     final templateVm = context.watch<TemplateViewModel>();
     final autoReplyVm = context.watch<AutoReplyViewModel>();
     final connectionVm = context.watch<ConnectionViewModel>();
 
-    final totalSent = templateVm.sendResults.length;
-    final successSent = templateVm.sendResults.where((r) => r.success).length;
-    final failedSent = totalSent - successSent;
+    // Combinar dados do banco (persistidos) com dados da sessão atual
+    final dbEnviosHoje = overviewVm.enviosHoje;
+    final dbFalhasHoje = overviewVm.falhasHoje;
+    final dbRespostasHoje = overviewVm.respostasHoje;
+
+    // Sessão atual (ainda não persistidos no banco)
+    final sessionSuccess = templateVm.sendResults.where((r) => r.success).length;
+    final sessionFailed = templateVm.sendResults.where((r) => !r.success).length;
+
+    final totalEnviadas = dbEnviosHoje + sessionSuccess;
+    final totalFalhas = dbFalhasHoje + sessionFailed;
     final repliedCount = autoReplyVm.repliedCount;
     final unansweredCount = autoReplyVm.queueCount;
-    final returnRate = totalSent > 0
-        ? ((repliedCount / totalSent) * 100).clamp(0, 100).toStringAsFixed(1)
-        : '0.0';
+    final returnRate = overviewVm.taxaRetorno.toStringAsFixed(1);
 
     final cards = [
       MetricCard(
-        label: 'Enviadas',
-        value: successSent.toString(),
+        label: 'Enviadas Hoje',
+        value: totalEnviadas.toString(),
         icon: Icons.send_rounded,
         accentColor: AppColors.metricSent,
-        subtitle: 'Total na sessão',
-        trend: failedSent > 0 ? '$failedSent falhas' : null,
-        trendPositive: failedSent == 0 ? null : false,
+        subtitle: 'Total: ${overviewVm.enviosTotal + sessionSuccess}',
+        trend: totalFalhas > 0 ? '$totalFalhas falhas' : 'Sem falhas',
+        trendPositive: totalFalhas == 0 ? true : false,
       ),
       MetricCard(
         label: 'Pendentes',
@@ -80,12 +94,12 @@ class _MetricsRow extends StatelessWidget {
         trendPositive: null,
       ),
       MetricCard(
-        label: 'Sem Resposta',
-        value: unansweredCount.toString(),
+        label: 'Respostas Hoje',
+        value: dbRespostasHoje.toString(),
         icon: Icons.mark_chat_unread_rounded,
         accentColor: AppColors.warning,
-        subtitle: 'Responderam ao envio automático',
-        trend: unansweredCount > 0 ? 'Aguardando' : 'Nenhum',
+        subtitle: 'Total: ${overviewVm.respostasTotal}',
+        trend: unansweredCount > 0 ? '$unansweredCount na fila' : 'Nenhum pendente',
         trendPositive: unansweredCount == 0 ? true : false,
       ),
       MetricCard(
@@ -102,7 +116,7 @@ class _MetricsRow extends StatelessWidget {
         value: '$returnRate%',
         icon: Icons.trending_up_rounded,
         accentColor: AppColors.metricReturn,
-        subtitle: 'Respostas / Enviadas',
+        subtitle: 'Respostas / Enviadas (geral)',
         trend: connectionVm.isConnected ? 'Online' : 'Offline',
         trendPositive: connectionVm.isConnected ? true : false,
       ),
@@ -149,46 +163,79 @@ class _MetricsRow extends StatelessWidget {
 class _ChartsRow extends StatelessWidget {
   const _ChartsRow();
 
-  static const _mockData = [
-    ActivityBarData(label: 'Seg', sent: 42, received: 18),
-    ActivityBarData(label: 'Ter', sent: 67, received: 31),
-    ActivityBarData(label: 'Qua', sent: 53, received: 22),
-    ActivityBarData(label: 'Qui', sent: 89, received: 45),
-    ActivityBarData(label: 'Sex', sent: 74, received: 37),
-    ActivityBarData(label: 'Sáb', sent: 28, received: 14),
-    ActivityBarData(label: 'Dom', sent: 15, received: 8),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    final overviewVm = context.watch<OverviewViewModel>();
+
+    final activityData = overviewVm.weeklyActivity;
+    final responseData = overviewVm.weeklyResponses;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 900;
         final chart = _DashCard(
           title: 'Atividade da Semana',
-          subtitle: 'Mensagens enviadas vs. recebidas',
+          subtitle: 'Mensagens enviadas vs. recebidas (banco)',
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               _Legend(color: AppColors.metricSent, label: 'Enviadas'),
               const SizedBox(width: 12),
               _Legend(color: AppColors.metricUnread, label: 'Recebidas'),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: IconButton(
+                  onPressed: overviewVm.loadStats,
+                  icon: const Icon(Icons.refresh_rounded, size: 15),
+                  tooltip: 'Atualizar dados',
+                  padding: EdgeInsets.zero,
+                  color: AppColors.textMuted,
+                ),
+              ),
             ],
           ),
           child: SizedBox(
             height: 220,
-            child: ActivityBarChart(data: _mockData),
+            child: overviewVm.isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : activityData.isEmpty
+                    ? Center(
+                        child: Text(
+                          'Nenhum envio registrado nos últimos 7 dias',
+                          style: GoogleFonts.inter(
+                            color: AppColors.textMuted,
+                            fontSize: 13,
+                          ),
+                        ),
+                      )
+                    : ActivityBarChart(data: activityData),
           ),
         );
 
         final responseRate = _DashCard(
-          title: 'Taxa de Resposta',
-          subtitle: 'Últimos 7 dias',
+          title: 'Respostas Recebidas',
+          subtitle: 'Últimos 7 dias (banco)',
           child: SizedBox(
             height: 220,
-            child: ActivityLineChart(
-              data: const [18.0, 31.0, 22.0, 45.0, 37.0, 14.0, 8.0],
-            ),
+            child: overviewVm.isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : responseData.every((v) => v == 0)
+                    ? Center(
+                        child: Text(
+                          'Nenhuma resposta registrada',
+                          style: GoogleFonts.inter(
+                            color: AppColors.textMuted,
+                            fontSize: 13,
+                          ),
+                        ),
+                      )
+                    : ActivityLineChart(data: responseData),
           ),
         );
 
@@ -222,20 +269,28 @@ class _BottomRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final templateVm = context.watch<TemplateViewModel>();
+    final overviewVm = context.watch<OverviewViewModel>();
+    final recent = overviewVm.recentEnvios;
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= 900;
         final recentActivity = _DashCard(
           title: 'Resultados Recentes',
-          subtitle: 'Últimas mensagens enviadas',
-          child: templateVm.sendResults.isEmpty
-              ? _EmptyState(
-                  icon: Icons.inbox_rounded,
-                  message: 'Nenhum envio realizado ainda',
+          subtitle: 'Últimos envios persistidos no banco (hoje)',
+          child: overviewVm.isLoading
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 32),
+                  child: Center(
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
                 )
-              : _ResultsTable(results: templateVm.sendResults.reversed.take(8).toList()),
+              : recent.isEmpty
+                  ? _EmptyState(
+                      icon: Icons.inbox_rounded,
+                      message: 'Nenhum envio registrado hoje',
+                    )
+                  : _ResultsTable(results: recent),
         );
 
         final quickStatus = _DashCard(
@@ -392,15 +447,15 @@ class _EmptyState extends StatelessWidget {
 
 class _ResultsTable extends StatelessWidget {
   const _ResultsTable({required this.results});
-  final List results;
+  final List<RecentEnvio> results;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: results.map<Widget>((r) {
-        final isSuccess = r.success as bool;
-        final phone = r.phone as String? ?? '';
-        final message = r.message as String? ?? '';
+        final isSuccess = r.success;
+        final phone = r.phone;
+        final message = r.message;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 5),
           child: Row(
@@ -460,6 +515,7 @@ class _SystemStatus extends StatelessWidget {
     final connectionVm = context.watch<ConnectionViewModel>();
     final autoReplyVm = context.watch<AutoReplyViewModel>();
     final templateVm = context.watch<TemplateViewModel>();
+    final overviewVm = context.watch<OverviewViewModel>();
 
     final items = [
       _StatusItem(
@@ -486,8 +542,8 @@ class _SystemStatus extends StatelessWidget {
       ),
       _StatusItem(
         label: 'Banco de Dados',
-        value: 'Ativo',
-        color: AppColors.success,
+        value: overviewVm.dbReady ? 'Conectado' : 'Indisponivel',
+        color: overviewVm.dbReady ? AppColors.success : AppColors.warning,
         icon: Icons.storage_rounded,
       ),
     ];

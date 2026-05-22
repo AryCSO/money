@@ -1,6 +1,11 @@
 /// Representa um servidor extraido da planilha.
 class ServerData {
+  /// Primeiro nome — usado no envio (token {NOME}) e na inferencia de genero.
   final String nome;
+
+  /// Nome completo — usado apenas para exibicao/gestao na interface.
+  /// O envio continua usando somente o primeiro nome ([nome]).
+  final String nomeCompleto;
   final String cargo;
   final String telefone;
   final String ddd;
@@ -14,6 +19,7 @@ class ServerData {
 
   ServerData({
     required this.nome,
+    String? nomeCompleto,
     required this.cargo,
     required this.telefone,
     required this.ddd,
@@ -24,7 +30,9 @@ class ServerData {
     required this.genero,
     this.isSelected = true,
     this.alreadySent = false,
-  });
+  }) : nomeCompleto = (nomeCompleto == null || nomeCompleto.trim().isEmpty)
+           ? nome
+           : nomeCompleto.trim();
 
   List<String> get parcelasFormatadas {
     return parcelas.map((value) {
